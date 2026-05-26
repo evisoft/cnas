@@ -230,7 +230,7 @@ jobs:
         # binary version; we pin a specific 3.x release rather than
         # `latest` so a future Helm-4 GA cannot silently upgrade the
         # release lane and surprise operators.
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         with:
           version: v3.14.4
 
