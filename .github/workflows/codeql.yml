@@ -1,0 +1,75 @@
+# Purpose:
+#   GitHub CodeQL static analysis for C#. Catches a class of correctness and security
+#   issues complementary to the Microsoft Security DevOps SAST scan in ci.yml.
+#   Results land in the GitHub Security tab as code-scanning alerts.
+#
+# When:
+#   - On pull_request when any C# source, project, or build prop changes. Limited path
+#     filter keeps the scan from running on doc-only or YAML-only PRs.
+#   - On a weekly schedule (Monday 05:17 UTC -- CLAUDE.md mandates UTC). Cron is
+#     intentionally off the top of the hour to avoid the global "cron stampede" that
+#     overloads GitHub Actions at :00 / :15 / :30 / :45.
+#
+# Cardinal rules applied:
+#   - All actions pinned to a major version.
+#   - Job declares its own least-privilege permissions block.
+#   - No secrets required (CodeQL runs with the GITHUB_TOKEN).
+
+name: CodeQL
+
+on:
+  pull_request:
+    paths:
+      - "**.cs"
+      - "**.csproj"
+      - "**.props"
+      - ".github/workflows/codeql.yml"
+  schedule:
+    # Weekly: Monday 05:17 UTC. Off-the-hour to reduce GitHub Actions cron contention.
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (csharp)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [csharp]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.x"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # security-and-quality includes the security-focused queries plus correctness rules.
+          queries: security-and-quality
+
+      - name: Autobuild
+        # Autobuild understands the standard `dotnet restore && dotnet build` flow which
+        # is sufficient for this solution (no exotic build steps).
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

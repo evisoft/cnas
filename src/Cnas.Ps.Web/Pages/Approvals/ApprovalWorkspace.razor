@@ -1,0 +1,325 @@
+@page "/approvals"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "CnasDecider")]
+@inject CnasApiClient Api
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    R0590 / TOR CF 10.01 — decider's approval workspace. Displays the list of
+    decisions awaiting the calling decider's approval, alongside a small
+    chip-strip summary of the queue at the top. Mirrors the state-machine
+    pattern of Inbox.razor / SupervisorWorkspace.razor: Loading → Loaded |
+    Error, with an Anonymous branch when the cascaded session indicates no
+    authenticated user.
+
+    Role-gating happens server-side via the [Authorize(Policy = "CnasDecider")]
+    attribute on ApprovalsController; the client-side IsDecider check below is
+    a UX courtesy that surfaces a friendly anonymous-message instead of
+    relying on the API's 401/403. The page exposes stable data-testid hooks
+    so the bUnit suite can target selectors without coupling to copy.
+
+    Localisation keys live under the `Approvals.*` namespace in
+    PagesResource.resx; `Common.Error` is reused from the shared bucket.
+*@
+
+<PageTitle>@L["Approvals.Title"]</PageTitle>
+
+<h1 data-testid="heading">@L["Approvals.Title"]</h1>
+
+@if (!_session.IsAuthenticated)
+{
+    <p data-testid="anonymous-message">@L["Approvals.Anonymous"]</p>
+}
+else if (_state == LoadState.Loading)
+{
+    <p data-testid="loading">@L["Approvals.Loading"]</p>
+}
+else if (_state == LoadState.Error)
+{
+    <div class="alert alert-error" role="alert" data-testid="error-alert">
+        <strong>@L["Common.Error"]</strong>
+        <code>@_errorCode</code>
+        @if (!string.IsNullOrWhiteSpace(_errorDetail))
+        {
+            <p data-testid="error-detail">@_errorDetail</p>
+        }
+    </div>
+}
+else
+{
+    @* R0590 — chip-strip summary rendered above the list. Three counters:
+       pending / overdue / today. Each chip carries a data-testid hook the
+       bUnit assertions target directly. *@
+    <ul class="approval-summary" data-testid="approval-summary">
+        <li class="chip" data-testid="chip-pending">
+            <span class="label">@L["Approvals.SummaryPending"]</span>
+            <span class="value" data-testid="chip-pending-value">@(_summary?.PendingCount ?? 0)</span>
+        </li>
+        <li class="chip chip-warn" data-testid="chip-overdue">
+            <span class="label">@L["Approvals.SummaryOverdue"]</span>
+            <span class="value" data-testid="chip-overdue-value">@(_summary?.OverdueCount ?? 0)</span>
+        </li>
+        <li class="chip chip-info" data-testid="chip-today">
+            <span class="label">@L["Approvals.SummaryToday"]</span>
+            <span class="value" data-testid="chip-today-value">@(_summary?.TodayCount ?? 0)</span>
+        </li>
+    </ul>
+
+    @if (_pending is null || _pending.Items.Count == 0)
+    {
+        <p data-testid="empty-queue">@L["Approvals.Empty"]</p>
+    }
+    else
+    {
+        <table class="approval-queue" data-testid="approval-queue-table">
+            <thead>
+                <tr>
+                    <th>@L["Approvals.ColDossier"]</th>
+                    <th>@L["Approvals.ColDecision"]</th>
+                    <th>@L["Approvals.ColExaminer"]</th>
+                    <th>@L["Approvals.ColEmittedAt"]</th>
+                    <th>@L["Approvals.ColSlaDeadline"]</th>
+                    <th>@L["Approvals.ColActions"]</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _pending.Items)
+                {
+                    <tr data-testid="approval-row" data-dossier-sqid="@row.Id">
+                        <td>@row.DossierCode</td>
+                        <td>@row.DecisionTitle</td>
+                        <td>@(row.ExaminerName ?? "—")</td>
+                        <td>@row.EmittedAtUtc.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td>@(row.SlaDeadlineUtc?.ToString("yyyy-MM-dd") ?? "—")</td>
+                        <td>
+                            <button type="button"
+                                    class="btn btn-primary"
+                                    data-testid="approve-button"
+                                    data-dossier-sqid="@row.Id"
+                                    disabled="@_actionBusy"
+                                    @onclick="() => OnApproveAsync(row.Id)">
+                                @L["Approvals.ApproveButton"]
+                            </button>
+                            <button type="button"
+                                    class="btn btn-warning"
+                                    data-testid="reject-button"
+                                    data-dossier-sqid="@row.Id"
+                                    disabled="@_actionBusy"
+                                    @onclick="() => OnBeginReject(row.Id)">
+                                @L["Approvals.RejectButton"]
+                            </button>
+                        </td>
+                    </tr>
+                    @if (_rejectingDossierSqid == row.Id)
+                    {
+                        <tr data-testid="reject-dialog-row">
+                            <td colspan="6">
+                                <label for="reject-reason-@row.Id">
+                                    @L["Approvals.RejectReasonLabel"]
+                                </label>
+                                <textarea id="reject-reason-@row.Id"
+                                          rows="3"
+                                          class="form-control"
+                                          data-testid="reject-reason-input"
+                                          @bind="_rejectReason"></textarea>
+                                <button type="button"
+                                        class="btn btn-danger"
+                                        data-testid="reject-confirm-button"
+                                        disabled="@(_actionBusy || !IsRejectReasonValid())"
+                                        @onclick="() => OnConfirmRejectAsync(row.Id)">
+                                    @L["Approvals.RejectConfirmButton"]
+                                </button>
+                                <button type="button"
+                                        class="btn btn-secondary"
+                                        data-testid="reject-cancel-button"
+                                        disabled="@_actionBusy"
+                                        @onclick="OnCancelReject">
+                                    @L["Approvals.RejectCancelButton"]
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    /// <summary>
+    /// Cascaded authenticated session. The decider's role membership is checked
+    /// server-side via the [Authorize(Policy = "CnasDecider")] attribute on the
+    /// upstream controller; here the cascading value drives the
+    /// loading vs anonymous branch only.
+    /// </summary>
+    [CascadingParameter(Name = "Session")]
+    public UserSession Session { get; set; } = UserSession.Anonymous;
+
+    /// <summary>Local non-nullable copy used inside the markup.</summary>
+    private UserSession _session = UserSession.Anonymous;
+
+    /// <summary>Three-state load machine driving which markup branch renders.</summary>
+    private LoadState _state = LoadState.Loading;
+
+    /// <summary>Chip-strip summary payload; non-null once <see cref="_state"/> == Loaded.</summary>
+    private ApprovalWorkspaceSummaryDto? _summary;
+
+    /// <summary>Paged decisions payload; non-null once <see cref="_state"/> == Loaded.</summary>
+    private PagedResult<ApprovalQueueItemDto>? _pending;
+
+    /// <summary>Stable error code surfaced by the API client when the initial fetch fails.</summary>
+    private string? _errorCode;
+
+    /// <summary>Server-provided error detail message, displayed inside the error alert when present.</summary>
+    private string? _errorDetail;
+
+    /// <summary>Sqid of the dossier currently being rejected; null when no reject dialog is open.</summary>
+    private string? _rejectingDossierSqid;
+
+    /// <summary>Reason text bound to the reject-dialog textarea.</summary>
+    private string _rejectReason = string.Empty;
+
+    /// <summary>True while an approve/reject round-trip is in flight; disables buttons to prevent double-clicks.</summary>
+    private bool _actionBusy;
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        _session = Session;
+        if (!_session.IsAuthenticated)
+        {
+            _state = LoadState.Loaded;
+            return;
+        }
+
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Re-fetches the summary + pending list. Called on initial load and after
+    /// each successful approve/reject so the queue reflects the latest state.
+    /// </summary>
+    private async Task ReloadAsync()
+    {
+        var summary = await Api.GetApprovalSummaryAsync().ConfigureAwait(false);
+        if (summary.IsFailure)
+        {
+            _errorCode = summary.ErrorCode;
+            _errorDetail = summary.ErrorMessage;
+            _state = LoadState.Error;
+            return;
+        }
+        _summary = summary.Value;
+
+        var pending = await Api.GetPendingApprovalsAsync(page: 1, pageSize: 20).ConfigureAwait(false);
+        if (pending.IsFailure)
+        {
+            _errorCode = pending.ErrorCode;
+            _errorDetail = pending.ErrorMessage;
+            _state = LoadState.Error;
+            return;
+        }
+        _pending = pending.Value;
+        _state = LoadState.Loaded;
+    }
+
+    /// <summary>
+    /// Handles the Approve action — calls
+    /// <see cref="CnasApiClient.ApproveDossierAsync"/> and reloads the queue.
+    /// </summary>
+    /// <param name="dossierSqid">Sqid of the dossier to approve.</param>
+    private async Task OnApproveAsync(string dossierSqid)
+    {
+        if (_actionBusy) return;
+        _actionBusy = true;
+        try
+        {
+            var result = await Api.ApproveDossierAsync(dossierSqid, note: null).ConfigureAwait(false);
+            if (result.IsFailure)
+            {
+                _errorCode = result.ErrorCode;
+                _errorDetail = result.ErrorMessage;
+                _state = LoadState.Error;
+                return;
+            }
+            await ReloadAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _actionBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// Opens the inline reject-dialog for the supplied dossier. The dialog
+    /// captures the mandatory reason (3-500 chars) before the actual REST call
+    /// is issued.
+    /// </summary>
+    /// <param name="dossierSqid">Sqid of the dossier to reject.</param>
+    private void OnBeginReject(string dossierSqid)
+    {
+        _rejectingDossierSqid = dossierSqid;
+        _rejectReason = string.Empty;
+    }
+
+    /// <summary>Closes the reject-dialog without issuing the REST call.</summary>
+    private void OnCancelReject()
+    {
+        _rejectingDossierSqid = null;
+        _rejectReason = string.Empty;
+    }
+
+    /// <summary>
+    /// Posts the captured reason to <see cref="CnasApiClient.RejectDossierAsync"/>
+    /// and reloads the queue.
+    /// </summary>
+    /// <param name="dossierSqid">Sqid of the dossier being rejected.</param>
+    private async Task OnConfirmRejectAsync(string dossierSqid)
+    {
+        if (_actionBusy || !IsRejectReasonValid()) return;
+        _actionBusy = true;
+        try
+        {
+            var result = await Api.RejectDossierAsync(dossierSqid, _rejectReason).ConfigureAwait(false);
+            if (result.IsFailure)
+            {
+                _errorCode = result.ErrorCode;
+                _errorDetail = result.ErrorMessage;
+                _state = LoadState.Error;
+                return;
+            }
+            _rejectingDossierSqid = null;
+            _rejectReason = string.Empty;
+            await ReloadAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _actionBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// True when <see cref="_rejectReason"/> is in the allowed 3-500 character
+    /// window. Mirrors the server-side validator so the UI does not fire a
+    /// guaranteed-400 round-trip.
+    /// </summary>
+    /// <returns>True when the captured reason is acceptable.</returns>
+    private bool IsRejectReasonValid()
+    {
+        if (string.IsNullOrWhiteSpace(_rejectReason)) return false;
+        var len = _rejectReason.Trim().Length;
+        return len is >= 3 and <= 500;
+    }
+
+    /// <summary>Three-position state machine driving which markup branch renders.</summary>
+    private enum LoadState
+    {
+        /// <summary>The API call is in-flight; render the loading marker.</summary>
+        Loading,
+
+        /// <summary>The API call succeeded; render the summary + list / empty-state.</summary>
+        Loaded,
+
+        /// <summary>The API call failed; render the error alert.</summary>
+        Error,
+    }
+}

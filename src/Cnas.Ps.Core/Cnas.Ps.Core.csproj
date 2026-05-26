@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Cnas.Ps.Core</AssemblyName>
+    <RootNamespace>Cnas.Ps.Core</RootNamespace>
+    <Description>
+      Core / Domain layer for SI "Protecția Socială".
+      Entities, value objects, enums, domain interfaces. Zero external dependencies.
+    </Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Cnas.Ps.Core.Tests" />
+  </ItemGroup>
+
+</Project>

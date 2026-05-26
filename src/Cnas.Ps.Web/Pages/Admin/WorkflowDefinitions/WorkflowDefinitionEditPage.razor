@@ -1,0 +1,177 @@
+@page "/admin/workflow-definitions/{WorkflowCode}"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "CnasAdmin")]
+@using Cnas.Ps.Web.Backend
+@using Cnas.Ps.Web.Components.Admin
+@using Cnas.Ps.Web.Models
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+
+@*
+    R0121 / CF 16.02 — MVP admin edit page for the visual designer.
+
+    Two stacked panes:
+      • Top — read-only SVG render of the parsed graph (via
+        WorkflowDefinitionSvgRenderer).
+      • Bottom — textarea pre-populated with the raw definition body. "Re-render
+        visual" re-parses the textarea; "Save" PUTs back to the existing
+        REST endpoint.
+
+    Production bodies are JSON; the parser also accepts the simpler <workflow>
+    XML envelope for the visual preview (documented in
+    WorkflowGraphParser.cs). Interactive editing is deliberately out of scope.
+*@
+
+<PageTitle>Edit workflow @WorkflowCode</PageTitle>
+
+<header class="page-header">
+    <a href="/admin/workflow-definitions" class="back-link">&laquo; Back to list</a>
+    <h1>Workflow definition: <code>@WorkflowCode</code></h1>
+</header>
+
+@if (_loadError is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="wf-load-error">
+        <strong>Failed to load</strong> <code>@_loadError</code>
+    </div>
+}
+else if (_body is null)
+{
+    <p data-testid="wf-loading">Loading...</p>
+}
+else
+{
+    <section class="wf-preview" aria-label="visual preview">
+        <h2>Visual preview</h2>
+        @if (_parseError is not null)
+        {
+            <div class="alert alert-warning" data-testid="wf-parse-error" role="alert">
+                <strong>Parse error</strong> <code>@_parseError</code>
+                <p class="hint">
+                    The visual preview shows the last successfully-parsed model.
+                    Fix the body and re-render to refresh.
+                </p>
+            </div>
+        }
+        <WorkflowDefinitionSvgRenderer Model="@_model" />
+    </section>
+
+    <section class="wf-editor" aria-label="source editor">
+        <h2>Source</h2>
+        <textarea data-testid="wf-xml-textarea"
+                  rows="20" cols="100" spellcheck="false"
+                  @bind="_body">@_body</textarea>
+
+        <div class="actions">
+            <button type="button" data-testid="wf-rerender-btn" @onclick="ReRender">
+                Re-render visual
+            </button>
+            <button type="button" class="primary" data-testid="wf-save-btn"
+                    disabled="@(_parseError is not null || _saving)"
+                    @onclick="OnSaveAsync">
+                Save
+            </button>
+            @if (_saveError is not null)
+            {
+                <span class="alert-inline" data-testid="wf-save-error">
+                    <strong>Save failed</strong> <code>@_saveError</code>
+                </span>
+            }
+            else if (_saved)
+            {
+                <span class="success-inline" data-testid="wf-save-ok">Saved.</span>
+            }
+        </div>
+    </section>
+}
+
+@code {
+    /// <summary>Route parameter — stable workflow code (NOT a Sqid).</summary>
+    [Parameter] public string WorkflowCode { get; set; } = string.Empty;
+
+    /// <summary>Current textarea content (kept in sync via <c>@@bind</c>).</summary>
+    private string? _body;
+
+    /// <summary>Last successfully-parsed graph; null until <see cref="ReRender"/> succeeds at least once.</summary>
+    private WorkflowGraphModel? _model;
+
+    /// <summary>Stable <c>WORKFLOW_XML.*</c> error code from the most recent parse attempt; null on success.</summary>
+    private string? _parseError;
+
+    /// <summary>Inline error from the initial GET; null on success.</summary>
+    private string? _loadError;
+
+    /// <summary>Inline error from the most recent save; null when none.</summary>
+    private string? _saveError;
+
+    /// <summary>True for one render after a successful save so the operator sees confirmation.</summary>
+    private bool _saved;
+
+    /// <summary>Disables Save while an inflight request is in progress to prevent double-clicks.</summary>
+    private bool _saving;
+
+    /// <inheritdoc />
+    protected override async Task OnParametersSetAsync()
+    {
+        _loadError = null;
+        _body = null;
+        _model = null;
+        _parseError = null;
+        _saved = false;
+        _saveError = null;
+
+        var r = await Api.GetWorkflowDefinitionBodyAsync(WorkflowCode).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _loadError = r.ErrorCode;
+            return;
+        }
+        _body = r.Value;
+        // Auto-render once on load so the operator sees the current state immediately.
+        ReRender();
+    }
+
+    /// <summary>
+    /// Re-parses the textarea content and updates <see cref="_model"/> /
+    /// <see cref="_parseError"/> accordingly. Pure local work — no HTTP.
+    /// </summary>
+    private void ReRender()
+    {
+        var parse = WorkflowGraphParser.Parse(_body ?? string.Empty);
+        if (parse.IsFailure)
+        {
+            _parseError = parse.ErrorCode;
+            // Keep _model at its previous value so the preview never blanks
+            // mid-edit; the parse-error alert tells the operator what happened.
+            return;
+        }
+        _parseError = null;
+        _model = parse.Value;
+    }
+
+    /// <summary>
+    /// PUTs the current textarea body back to the REST endpoint and updates
+    /// the inline status flag. Disabled while a parse error is showing — the
+    /// admin must fix the document before saving.
+    /// </summary>
+    private async Task OnSaveAsync()
+    {
+        _saving = true;
+        _saveError = null;
+        _saved = false;
+        try
+        {
+            var r = await Api.SaveWorkflowDefinitionBodyAsync(WorkflowCode, _body ?? string.Empty)
+                .ConfigureAwait(false);
+            if (r.IsFailure)
+            {
+                _saveError = r.ErrorCode;
+                return;
+            }
+            _saved = true;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

@@ -1,0 +1,59 @@
+@page "/"
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    Landing page for the citizen portal. Anonymous-friendly: shows project name,
+    a brief tagline, the MPass login button, and a language switcher.
+*@
+
+<PageTitle>@L["App.Title"]</PageTitle>
+
+<section class="hero" role="region" aria-label="landing">
+    <h1 data-testid="hero-title">@L["App.Title"]</h1>
+    <p data-testid="hero-greeting">@L["Index.Greeting"]</p>
+
+    <div class="actions">
+        <button type="button" class="primary login" data-testid="login-btn" @onclick="OnLoginAsync">
+            @L["Index.LoginButton"]
+        </button>
+
+        <label class="lang-switch">
+            <span class="sr-only">Language</span>
+            <select data-testid="lang-select" @bind="_culture" @bind:after="OnCultureChangedAsync">
+                <option value="ro">RO</option>
+                <option value="en">EN</option>
+                <option value="ru">RU</option>
+            </select>
+        </label>
+    </div>
+</section>
+
+@code {
+    /// <summary>Currently selected UI culture tag. Defaults to Romanian per project policy.</summary>
+    private string _culture = "ro";
+
+    /// <summary>Forces a hard navigation to the API login endpoint (MPass round-trip).</summary>
+    private void OnLoginAsync()
+    {
+        Navigation.NavigateTo("/api/auth/login", forceLoad: true);
+    }
+
+    /// <summary>
+    /// Persists the chosen culture via <c>localStorage</c> and triggers a reload so
+    /// every component re-resolves its localized strings against the new culture.
+    /// </summary>
+    private async Task OnCultureChangedAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", "ui-culture", _culture).ConfigureAwait(false);
+        }
+        catch (JSException)
+        {
+            // Best-effort — fall through to reload regardless.
+        }
+        Navigation.NavigateTo(Navigation.Uri, forceLoad: true);
+    }
+}

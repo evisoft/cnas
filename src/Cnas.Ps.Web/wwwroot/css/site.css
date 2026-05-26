@@ -1,0 +1,30 @@
+/* Baseline styles. Modelul Unitar de Design tokens will live in BlazorCN/blazorcn.css. */
+:root {
+    --color-bg: #ffffff;
+    --color-fg: #0f172a;
+    --color-primary: #002b7f; /* MD national blue */
+    --color-accent: #ffd200;
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background: var(--color-bg);
+    color: var(--color-fg);
+    line-height: 1.5;
+}
+
+.layout > header {
+    background: var(--color-primary);
+    color: white;
+    padding: 0.75rem 1rem;
+}
+
+.layout > main {
+    padding: 1rem;
+    max-width: 80rem;
+    margin: 0 auto;
+}

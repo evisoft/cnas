@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+    <!-- R0226 — used by export-renderer tests to round-trip XLSX bytes back into a typed grid for assertions. -->
+    <PackageReference Include="ClosedXML" />
+    <!-- R0529 — used by DocxReportExporter tests to round-trip DOCX bytes back into an OpenXML document for assertions. -->
+    <PackageReference Include="DocumentFormat.OpenXml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Cnas.Ps.Core\Cnas.Ps.Core.csproj" />
+    <ProjectReference Include="..\..\src\Cnas.Ps.Infrastructure\Cnas.Ps.Infrastructure.csproj" />
+    <!-- R2164 / INT 005 — needed by WsdlPortalServiceTests to scan a real
+         controller assembly for the WSDL portal reflection invariants. -->
+    <ProjectReference Include="..\..\src\Cnas.Ps.Api\Cnas.Ps.Api.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+  </ItemGroup>
+
+</Project>

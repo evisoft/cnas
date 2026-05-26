@@ -1,0 +1,83 @@
+{{/*
+=============================================================================
+Ingress — single entry point for /api/* + /health/*.
+=============================================================================
+TOR R0038: "Ingress with TLS". One Ingress object per environment because:
+  * One TLS certificate per host is simpler to rotate.
+  * The XFF chain is a single hop — the Ingress controller is the ONLY
+    entity allowed to set X-Forwarded-For, and the API's
+    RateLimitingOptions.TrustForwardedHeaders=true depends on that
+    invariant.
+
+X-Forwarded-For contract (CRITICAL — operators MUST verify):
+  * The Ingress controller (nginx / Traefik / etc.) MUST replace any
+    client-supplied XFF header with its own — i.e. set
+    `use_forwarded_headers: false` for nginx-ingress so it ignores
+    incoming XFF and constructs a fresh one with only the remote_addr.
+  * If a client-supplied XFF reaches the API, an attacker can rotate
+    rate-limit partitions trivially (each forged IP = a fresh bucket).
+
+TLS configuration paths:
+  * cert-manager (recommended for production): set ingress.tls.certManager
+    = true and ingress.tls.clusterIssuer = <issuer-name>. The Ingress is
+    annotated to trigger a Certificate resource and the named secret is
+    populated automatically.
+  * Manual: set ingress.tls.certManager = false and create
+    ingress.tls.secretName yourself:
+      kubectl create secret tls <name> --cert=cnas.crt --key=cnas.key
+
+The single host serves both /api/* (REST endpoints) and /health/* (probes
+reachable from outside the cluster for blackbox monitoring). Everything
+else under / is intentionally NOT routed — the Blazor web app has its own
+chart / ingress.
+=============================================================================
+*/}}
+{{- if .Values.ingress.enabled }}
+{{- include "cnas-ps.validateRequired" . -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "cnas-ps.apiName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+  annotations:
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.certManager }}
+    # cert-manager will materialize a Certificate resource matching this
+    # Ingress and populate ingress.tls.secretName automatically.
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          # /api/* — REST surface.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "cnas-ps.apiName" . }}
+                port:
+                  number: {{ .Values.service.port }}
+          # /health/* — kept on the SAME host so a single TLS cert covers
+          # both. Blackbox probes hit /health/live from outside the
+          # cluster; the in-cluster kubelet uses 8080 directly.
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "cnas-ps.apiName" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

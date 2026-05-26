@@ -1,0 +1,185 @@
+{{/*
+=============================================================================
+StatefulSet — Patroni-managed Postgres.
+=============================================================================
+TOR R0038 requires a Postgres StatefulSet (Patroni). This template renders
+that StatefulSet using the Zalando Spilo image (Patroni + Postgres + a bag
+of operational scripts).
+
+Why Spilo and not the operator (Zalando postgres-operator, CloudNativePG)?
+The cardinal rule in Chart.yaml prohibits external chart dependencies — and
+the operators come as Helm charts. Inlining the StatefulSet here is more
+verbose but keeps the chart self-contained and audit-friendly for
+procurement review.
+
+Topology:
+  * 3 replicas (1 leader, 2 standbys) — TOR PSR 006 expects reporting
+    workloads to land on a hot standby so transactional performance is not
+    affected.
+  * Pod anti-affinity is PREFERRED, not required. Small clusters (1-2
+    nodes) still get the available replicas; production must override
+    `postgres.podAntiAffinity.type: required` once 3+ nodes are
+    guaranteed.
+  * `volumeClaimTemplates` materializes a PVC per pod from the configured
+    storageClass. The PVC NAME pattern is `data-<sts>-<ordinal>` —
+    operators MUST preserve PVCs on chart re-install (don't `helm uninstall`
+    without backing them up first).
+
+Failover:
+  * Patroni elects a leader via the Kubernetes API (PATRONI_KUBERNETES_*
+    env vars). The leader is identified by the `role: master` pod label,
+    which the rw service selects on.
+  * Health probes use the Patroni HTTP API port 8008 — `/liveness` for
+    "process is up", `/readiness` for "I'm the leader and accepting
+    writes". Standbys report 503 on `/readiness` deliberately, so the rw
+    service ignores them.
+=============================================================================
+*/}}
+{{- if .Values.postgres.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "cnas-ps.postgresName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+spec:
+  serviceName: {{ include "cnas-ps.postgresHeadlessServiceName" . }}
+  replicas: {{ .Values.postgres.replicas }}
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "cnas-ps.postgresName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Spilo containers expect UID 101 internally; do NOT override fsGroup
+      # here — Spilo's entrypoint handles ownership setup. Pod-level non-root
+      # is enforced because the Spilo entrypoint demotes from root after
+      # initdb runs.
+      securityContext:
+        runAsNonRoot: false
+        fsGroup: 103
+      terminationGracePeriodSeconds: 120
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.postgres.podAntiAffinity.type "required" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+          {{- end }}
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+            - name: patroni-api
+              containerPort: 8008
+              protocol: TCP
+          env:
+            # Cluster identity — keep stable across reconciles.
+            - name: SCOPE
+              value: {{ include "cnas-ps.postgresName" . | quote }}
+            - name: PATRONI_SCOPE
+              value: {{ include "cnas-ps.postgresName" . | quote }}
+            - name: PATRONI_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: PATRONI_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PATRONI_KUBERNETES_LABELS
+              value: '{ "app.kubernetes.io/name": "{{ include "cnas-ps.name" . }}", "app.kubernetes.io/component": "postgres", "app.kubernetes.io/instance": "{{ .Release.Name }}" }'
+            - name: PATRONI_KUBERNETES_LEADER_LABEL_VALUE
+              value: master
+            - name: PATRONI_KUBERNETES_USE_ENDPOINTS
+              value: "true"
+            - name: PATRONI_KUBERNETES_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # Patroni REST API auth — used by patronictl. Credentials come
+            # from the API Secret so a single rotation rotates both at once.
+            - name: PATRONI_RESTAPI_USERNAME
+              value: admin
+            - name: PATRONI_RESTAPI_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cnas-ps.apiSecretName" . }}
+                  key: ConnectionStrings__Postgres
+                  optional: true
+            # Postgres roles — Spilo creates these on bootstrap.
+            - name: PGUSER_SUPERUSER
+              value: {{ .Values.postgres.superuserUsername | quote }}
+            - name: PGUSER_REPLICATION
+              value: {{ .Values.postgres.replicationUsername | quote }}
+            - name: PGUSER_ADMIN
+              value: {{ .Values.postgres.applicationUsername | quote }}
+            - name: PGDATA
+              value: /home/postgres/pgdata/pgroot/data
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              # Patroni's /liveness returns 200 once the process boot is
+              # complete (irrespective of leader status).
+              path: /liveness
+              port: patroni-api
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              # /readiness is intentionally LEADER-only. Standbys return
+              # 503 so the rw service ignores them.
+              path: /readiness
+              port: patroni-api
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /home/postgres/pgdata
+            - name: patroni-config
+              mountPath: /etc/patroni
+              readOnly: true
+      volumes:
+        - name: patroni-config
+          configMap:
+            name: {{ include "cnas-ps.postgresConfigName" . }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "postgres") | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.postgres.storageClass }}
+        storageClassName: {{ .Values.postgres.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storageSize }}
+{{- end }}

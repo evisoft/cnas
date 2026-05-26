@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    R0223 / UI 004 — Accessibility test project. Hosts the axe-core scan plus the
+    deserialization/filter helpers that test runners exercise without Playwright.
+
+    Why a separate project (vs. extending Cnas.Ps.E2E.Tests):
+      * The E2E suite is excluded from the unit/integration CI lane because Playwright
+        needs browser dependencies. The accessibility scan needs Playwright too but is
+        gated on the (vendored) axe-core bundle and is run in its own CI job that
+        installs the real bundle and the browsers — keeping the scan in a dedicated
+        project keeps the dependency-installation surface narrow.
+      * The helper record tests (AxeAnalysisResult.* filtering, JSON round-trip,
+        ToShortReport) are pure unit tests and run anywhere the .NET SDK is available;
+        keeping them next to the records they test follows the standard project layout.
+  -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.Playwright" />
+    <PackageReference Include="coverlet.collector" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Cnas.Ps.Web\Cnas.Ps.Web.csproj" />
+  </ItemGroup>
+
+  <!--
+    Vendor the axe-core script as an embedded resource so the runner can stream it
+    into the page via IPage.AddScriptTagAsync without depending on a CDN at scan
+    time. The file checked into the repo is a marked PLACEHOLDER (developer offline
+    convenience); the CI job that runs the accessibility scan downloads the real
+    axe.min.js into the same path before invoking dotnet test.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\axe.min.js" />
+  </ItemGroup>
+
+</Project>

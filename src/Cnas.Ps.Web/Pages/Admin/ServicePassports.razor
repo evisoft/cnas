@@ -1,0 +1,119 @@
+@page "/admin/service-passports"
+@using Microsoft.AspNetCore.Authorization
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@attribute [Authorize(Policy = "CnasAdmin")]
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+
+@*
+    R0640 / TOR CF 15.01-15.04 — admin service-passport list.
+
+    Renders one row per active service passport with an Edit button that
+    routes to the per-passport editor at /admin/service-passports/{code}.
+    Server-side authorisation (the underlying GET /api/service-passports is
+    gated by the cnas-admin policy) is mirrored by the [Authorize] attribute
+    above so the page does not even render for non-admins inside the WASM
+    runtime.
+
+    Localisation: English-only hard-coded copy — matches the staff-portal
+    iteration-91 convention; localised resx keys land in a follow-up.
+*@
+
+<PageTitle>Service passports (R0640)</PageTitle>
+
+<header class="page-header">
+    <h1>Service passports</h1>
+    <p class="hint">
+        TOR CF 15.01-15.04 — administer the service-passport catalogue. Pick
+        a row to open its editor; use the per-passport editor to update names,
+        the enabled flag, and the linked workflow.
+    </p>
+</header>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="sp-error">
+        <strong>Error</strong> <code>@_error</code>
+    </div>
+}
+else if (_items is null)
+{
+    <p data-testid="sp-loading">Loading...</p>
+}
+else if (_items.Count == 0)
+{
+    <p data-testid="sp-empty-state">No service passports configured.</p>
+}
+else
+{
+    <table class="sp-table" data-testid="sp-table">
+        <thead>
+            <tr>
+                <th>Code</th>
+                <th>Name (RO)</th>
+                <th>Active</th>
+                <th>Version</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in _items)
+            {
+                <tr data-testid="sp-row">
+                    <td><code>@item.Code</code></td>
+                    <td>@item.NameRo</td>
+                    <td>@(item.IsEnabled ? "Yes" : "No")</td>
+                    <td>@item.Version</td>
+                    <td>
+                        <button type="button" class="link" data-testid="sp-edit"
+                                @onclick="() => OpenEditor(item.Code)">
+                            Edit
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    /// <summary>Current loaded list (null while the initial fetch is in flight).</summary>
+    private IReadOnlyList<ServicePassportListItem>? _items;
+
+    /// <summary>Inline error code surfaced when the list call fails.</summary>
+    private string? _error;
+
+    /// <inheritdoc />
+    protected override Task OnInitializedAsync() => ReloadAsync();
+
+    /// <summary>
+    /// Refetches the catalogue and resets the inline-error region. Failures
+    /// land in <see cref="_error"/> so the operator sees the underlying error
+    /// code rather than a silent blank page.
+    /// </summary>
+    private async Task ReloadAsync()
+    {
+        _error = null;
+        var r = await Api.ListPassportsAsync().ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _error = r.ErrorCode;
+            _items = null;
+            return;
+        }
+        _items = r.Value;
+    }
+
+    /// <summary>
+    /// Navigates to the editor page for the supplied passport code. The
+    /// route segment is the stable logical code itself (the GET endpoint
+    /// accepts the code OR a Sqid, but the code is the human-readable
+    /// admin-facing identifier).
+    /// </summary>
+    /// <param name="code">Stable logical passport code.</param>
+    private void OpenEditor(string code)
+    {
+        Navigation.NavigateTo($"/admin/service-passports/{Uri.EscapeDataString(code)}");
+    }
+}

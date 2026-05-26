@@ -1,0 +1,47 @@
+# =============================================================================
+# .dockerignore — excludes everything the build doesn't need.
+# =============================================================================
+# Keeps the build context small (faster transfer to the Docker daemon) and
+# reduces the surface for accidental secrets in build layers.
+# Copy / symlink this file to the repository root when the docker build is
+# invoked from there: `docker build -f deploy/docker/Dockerfile.api .`.
+# =============================================================================
+
+# Build outputs --------------------------------------------------------------
+**/bin/
+**/obj/
+**/out/
+**/publish/
+**/TestResults/
+
+# Node / front-end intermediate artifacts ------------------------------------
+**/node_modules/
+**/dist/
+**/.next/
+
+# IDE / OS clutter -----------------------------------------------------------
+**/.vs/
+**/.vscode/
+**/.idea/
+**/.DS_Store
+**/Thumbs.db
+
+# Docs, tests, deploy artefacts — not needed at build time -------------------
+**/*.md
+tests/
+docs/
+deploy/
+ops/
+
+# Git + CI metadata ----------------------------------------------------------
+.git/
+.gitignore
+.gitattributes
+.github/
+.gitlab/
+
+# Secrets — belt-and-suspenders. Must NEVER be committed anyway. -------------
+**/*.env
+**/*.pfx
+**/*.key
+**/appsettings.*.local.json

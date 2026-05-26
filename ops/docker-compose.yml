@@ -1,0 +1,121 @@
+# docker-compose for local development and MCloud staging.
+# Production secrets are injected via the MCloud secret store; the values below
+# are dev defaults (CLAUDE.md §1.8 — secrets never in source control).
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cnas-postgres
+    environment:
+      POSTGRES_DB: cnas_ps
+      POSTGRES_USER: cnas
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cnas}
+      PGTZ: UTC
+    ports:
+      # Kept exposed for ad-hoc psql introspection; the API connects via PgBouncer
+      # (see the `pgbouncer` service below). In production the chart fronts Postgres
+      # the same way — see docs/operations.md §"Database connection pooling (R0025)".
+      - "5432:5432"
+    volumes:
+      - cnas-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cnas -d cnas_ps"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # R0025 — PgBouncer fronts Postgres in transaction-pooling mode so the per-pod
+  # MaxPoolSize=2000 (TOR PSR 003) is multiplexed onto ~50 actual Postgres backends.
+  # The image tag is pinned to avoid surprise upgrades changing pool semantics.
+  pgbouncer:
+    image: edoburu/pgbouncer:1.23.1
+    container_name: cnas-pgbouncer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://cnas:${POSTGRES_PASSWORD:-cnas}@postgres:5432/cnas_ps"
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 2500
+      DEFAULT_POOL_SIZE: 50
+      RESERVE_POOL_SIZE: 10
+      RESERVE_POOL_TIMEOUT: 5
+      SERVER_RESET_QUERY: "DISCARD ALL"
+      LISTEN_PORT: 6432
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "6432:6432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    container_name: cnas-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cnas}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cnaspassword}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - cnas-miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.api
+    container_name: cnas-api
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      # docker-compose hosts the LOCAL DEV stack — production deployments use the
+      # Helm chart in ops/k8s/cnas-ps/, never this compose file. We deliberately run
+      # the API as Development here so the dev-default passwords above (`cnaspassword`
+      # / `POSTGRES_PASSWORD:-cnas`) do not get paired with a Production environment
+      # marker, which would otherwise trigger the production-only guards in the
+      # composition root (empty Cors:AllowedOrigins, etc.) for what is fundamentally
+      # a local stack.
+      ASPNETCORE_ENVIRONMENT: Development
+      # R0025 — connect through PgBouncer (port 6432), not directly to Postgres (5432).
+      # Postgres remains exposed on 5432 for ad-hoc psql introspection only.
+      ConnectionStrings__Postgres: Host=pgbouncer;Port=6432;Database=cnas_ps;Username=cnas;Password=${POSTGRES_PASSWORD:-cnas}
+      Minio__Endpoint: minio:9000
+      Minio__AccessKey: ${MINIO_ROOT_USER:-cnas}
+      Minio__SecretKey: ${MINIO_ROOT_PASSWORD:-cnaspassword}
+      Minio__UseSsl: "false"
+      Cors__AllowedOrigins__0: ${WEB_ORIGIN:-http://localhost:8081}
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.web
+    container_name: cnas-web
+    depends_on:
+      - api
+    # The Blazor WebAssembly bundle is browser-only. It reads its backend URL from
+    # wwwroot/appsettings.json baked into the image; override it at deploy time by
+    # mounting a custom appsettings.json into /usr/share/nginx/html/.
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+
+volumes:
+  cnas-pgdata:
+  cnas-miniodata:

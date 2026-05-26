@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Cnas.Ps.Infrastructure</AssemblyName>
+    <RootNamespace>Cnas.Ps.Infrastructure</RootNamespace>
+    <Description>
+      Infrastructure layer for SI "Protecția Socială".
+      EF Core (PostgreSQL), MinIO storage, MGov adapters (MPass / MSign / MPay / MConnect / MNotify / MLog),
+      background jobs (Quartz), Sqid service implementation.
+    </Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Minio" />
+    <PackageReference Include="Sqids" />
+    <PackageReference Include="Konscious.Security.Cryptography.Argon2" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" />
+    <PackageReference Include="Quartz" />
+    <PackageReference Include="Quartz.Extensions.Hosting" />
+    <PackageReference Include="ClosedXML" />
+    <PackageReference Include="CsvHelper" />
+    <PackageReference Include="QuestPDF" />
+    <PackageReference Include="DocumentFormat.OpenXml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cnas.Ps.Core\Cnas.Ps.Core.csproj" />
+    <ProjectReference Include="..\Cnas.Ps.Application\Cnas.Ps.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Cnas.Ps.Infrastructure.Tests" />
+    <!-- R0194 — the synchronous test-only IAuditService substitute in the E2E suite
+         chains rows via AuditFlushProjector.ComputeRowHash so the verifier accepts
+         them; keeping the projector internal here keeps the helper out of the
+         production API surface. -->
+    <InternalsVisibleTo Include="Cnas.Ps.E2E.Tests" />
+  </ItemGroup>
+
+</Project>

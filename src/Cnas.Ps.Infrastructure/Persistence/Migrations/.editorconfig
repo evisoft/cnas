@@ -1,0 +1,9 @@
+# EF Core generated migrations: tolerate analyzer noise we don't control.
+[*.cs]
+generated_code = true
+dotnet_diagnostic.CA1861.severity = none      # Constant arrays in generated migrations are fine
+dotnet_diagnostic.CA1062.severity = none      # Null checks
+dotnet_diagnostic.CA1812.severity = none      # Migrations are instantiated by EF
+dotnet_diagnostic.CA1814.severity = none      # Jagged vs multi-dim arrays
+dotnet_diagnostic.CA1707.severity = none      # Underscored snapshot names
+dotnet_diagnostic.CS1591.severity = none      # No XML docs on generated code

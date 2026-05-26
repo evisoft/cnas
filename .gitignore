@@ -1,0 +1,74 @@
+# Build output
+bin/
+obj/
+out/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.user
+*.suo
+*.swp
+
+# .NET
+*.dll
+*.exe
+*.pdb
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# IDE
+.vs/
+.idea/
+.vscode/
+*.iml
+*.sln.docstates
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets / config
+*.env
+.env*
+!.env.example
+appsettings.*.local.json
+secrets/
+
+# Coverage
+coverage/
+*.coverage
+*.coveragexml
+TestResults/
+.coverage*
+
+# Logs
+logs/
+*.log
+
+# Postgres / minio data (dev)
+data/
+volumes/
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+
+# Generated docs
+docs/_build/
+docs/api/generated/
+
+# Frontend dist
+src/Cnas.Ps.Web/wwwroot/dist/
+node_modules/
+
+# OS / editor
+*.bak
+*.tmp
+
+# Local Claude instructions
+CLAUDE.local.md

@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1.7
+#
+# =============================================================================
+# Cnas.Ps.Web — production container image
+# =============================================================================
+# Multi-stage build for the Blazor WebAssembly Standalone front-end.
+#
+# Stage layout:
+#   1. build   — publishes the WASM bundle (wwwroot) via dotnet SDK.
+#   2. runtime — serves the static bundle via nginx-unprivileged on port 8080.
+#                Container starts as the built-in `nginx` UID (101), already
+#                non-root, no privileged ports required.
+#
+# Why nginx-unprivileged?
+#   The standard nginx image binds 80/443 and starts as root before dropping;
+#   the unprivileged variant runs as a non-root user from the start and binds
+#   on 8080 by default — perfect for Kubernetes pod securityContext defaults.
+#
+# Build context: repository root.
+#   docker build -f deploy/docker/Dockerfile.web -t cnas-ps-web:<tag> .
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# stage: build — restore + publish WASM bundle
+# -----------------------------------------------------------------------------
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Layer-friendly restore: project metadata only first.
+COPY Directory.Build.props Directory.Packages.props ./
+COPY Cnas.Ps.slnx ./
+COPY src/Cnas.Ps.Core/Cnas.Ps.Core.csproj           src/Cnas.Ps.Core/
+COPY src/Cnas.Ps.Contracts/Cnas.Ps.Contracts.csproj src/Cnas.Ps.Contracts/
+COPY src/Cnas.Ps.Web/Cnas.Ps.Web.csproj             src/Cnas.Ps.Web/
+
+RUN dotnet restore src/Cnas.Ps.Web/Cnas.Ps.Web.csproj
+
+# Full source, then publish the WASM SPA. The output is a static `wwwroot/`
+# tree (HTML/JS/WASM/dat/dll) — no .NET runtime needed in the runtime stage.
+COPY . ./
+
+RUN dotnet publish src/Cnas.Ps.Web/Cnas.Ps.Web.csproj \
+        --configuration Release \
+        --output /app \
+        --no-restore \
+        /p:GenerateDocumentationFile=false \
+        /p:TreatWarningsAsErrors=false
+
+# -----------------------------------------------------------------------------
+# stage: runtime — nginx-unprivileged serving the WASM bundle
+# -----------------------------------------------------------------------------
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+
+# Replace the default server config with the SPA-aware one (Brotli/Gzip
+# fallback, hashed-asset caching, /index.html fallback for client routing,
+# correct MIME for .wasm/.dat/.dll).
+COPY deploy/docker/nginx.web.conf /etc/nginx/conf.d/default.conf
+
+# Drop the published WASM bundle into nginx's document root.
+COPY --from=build /app/wwwroot/ /usr/share/nginx/html/
+
+# nginx-unprivileged already runs as UID 101; no USER directive needed.
+# Kubernetes securityContext enforces non-root regardless.
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 \
+    CMD ["sh", "-c", "wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1"]
+
+CMD ["nginx", "-g", "daemon off;"]

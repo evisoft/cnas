@@ -1,0 +1,40 @@
+{
+  "$schema": "https://alirezanet.github.io/Husky.Net/schema.json",
+  "tasks": [
+    {
+      "name": "format-staged-cs",
+      "group": "pre-commit",
+      "command": "dotnet",
+      "args": ["format", "Cnas.Ps.slnx", "--verify-no-changes", "--no-restore"],
+      "include": ["**/*.cs"]
+    },
+    {
+      "name": "build-warnings-as-errors",
+      "group": "pre-commit",
+      "command": "dotnet",
+      "args": [
+        "build",
+        "Cnas.Ps.slnx",
+        "-p:TreatWarningsAsErrors=true",
+        "--nologo",
+        "--no-restore"
+      ]
+    },
+    {
+      "name": "run-tests",
+      "group": "pre-commit",
+      "command": "dotnet",
+      "args": [
+        "test",
+        "tests/Cnas.Ps.Core.Tests/Cnas.Ps.Core.Tests.csproj",
+        "tests/Cnas.Ps.Application.Tests/Cnas.Ps.Application.Tests.csproj",
+        "tests/Cnas.Ps.Architecture.Tests/Cnas.Ps.Architecture.Tests.csproj",
+        "--nologo",
+        "--no-restore",
+        "--no-build",
+        "--verbosity",
+        "quiet"
+      ]
+    }
+  ]
+}

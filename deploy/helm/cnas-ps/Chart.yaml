@@ -1,0 +1,41 @@
+# =============================================================================
+# Helm chart manifest for the CNAS PS application stack.
+# =============================================================================
+# This chart deploys the API (ASP.NET Core 10) and Web (Blazor WASM SPA)
+# components, plus optional ancillary resources (Ingress, HPA, ServiceMonitor,
+# NetworkPolicy, ExternalSecret).
+#
+# Subcharts (Postgres, MinIO, etc.) are NOT bundled — production must use
+# managed services or the cluster's standard data-tier charts.
+# =============================================================================
+apiVersion: v2
+name: cnas-ps
+description: CNAS PS — Plăți Sociale (Social Payments) platform for CNAS Moldova.
+type: application
+
+# Chart version — bumped on every change to templates / values schema.
+version: 0.1.0
+
+# App version — tracks the upstream CNAS PS application release.
+appVersion: "1.0.0"
+
+kubeVersion: ">=1.27.0-0"
+
+home: https://github.com/evisoft/cnas
+sources:
+  - https://github.com/evisoft/cnas
+maintainers:
+  - name: CNAS Engineering
+    email: ops@cnas.gov.md
+
+keywords:
+  - cnas
+  - dotnet
+  - aspnetcore
+  - blazor
+  - government
+  - moldova
+
+annotations:
+  category: Application
+  licenses: Proprietary

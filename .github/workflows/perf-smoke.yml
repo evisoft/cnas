@@ -1,0 +1,97 @@
+# Purpose:
+#   Performance smoke gate that runs the k6 baseline harness
+#   (`perf/cnas-baseline.js`) against the deployed staging URL on every PR
+#   that touches the API surface. Asserts the latency SLOs declared in TOR
+#   PSR 001 / PSR 010 (see `src/Cnas.Ps.Core/Performance/SloRegistry.cs`).
+#
+# When:
+#   - On pull_request whenever files under `src/Cnas.Ps.Api/**`,
+#     `perf/**`, or this workflow itself change. We deliberately keep the
+#     path filter narrow because hitting staging on every doc-only PR
+#     would waste runner minutes and pollute the staging request graph.
+#
+# Why CI-gated to staging:
+#   * Running k6 against a localhost dotnet process inside the runner would
+#     measure the *runner* (noisy 2-core VM) rather than the *system under
+#     test*. PSR 001 is a target for the deployed environment, so we gate
+#     against staging where load-shedding, autoscaling, and the real
+#     reverse proxy are in play.
+#   * The `STAGING_BASE_URL` repository variable is the gate: if it is not
+#     set (e.g. PRs from forks that cannot read repository variables), the
+#     job emits a clear "skipped" notice and exits 0 rather than failing.
+#     This avoids breaking community contributions while keeping the gate
+#     mandatory on internal PRs once the variable is configured.
+#
+# Cardinal rules applied:
+#   - All actions pinned to a major version.
+#   - Job declares least-privilege permissions (read-only contents).
+#   - No secrets are referenced; the staging URL is a repository VARIABLE,
+#     not a secret, because it is part of the public deployment surface.
+
+name: Perf smoke (k6 — PSR 001 / PSR 010)
+
+on:
+  pull_request:
+    paths:
+      - "src/Cnas.Ps.Api/**"
+      - "perf/**"
+      - ".github/workflows/perf-smoke.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  k6:
+    name: k6 baseline against staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Skip-if-unset gate.
+      #
+      # We cannot reference `vars.STAGING_BASE_URL` directly inside an `if:`
+      # expression and also use the value later in the run command without
+      # repeating the lookup. Capturing it once into `$GITHUB_ENV` and
+      # exporting a boolean (`HAS_STAGING`) keeps the rest of the job
+      # readable and reuses the same value for the run step.
+      - name: Detect staging base URL
+        id: detect
+        env:
+          STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
+        run: |
+          if [ -z "${STAGING_BASE_URL}" ]; then
+            echo "STAGING_BASE_URL is not configured; perf-smoke will be skipped."
+            echo "has_staging=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found STAGING_BASE_URL — perf-smoke will execute."
+            echo "has_staging=true" >> "$GITHUB_OUTPUT"
+            echo "STAGING_BASE_URL=${STAGING_BASE_URL}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Set up k6
+        # `grafana/setup-k6-action` is the canonical k6 installer maintained
+        # by Grafana Labs. Pinned to the major version.
+        if: steps.detect.outputs.has_staging == 'true'
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run k6 baseline
+        # Bounded run (~3 minutes per scenario stages). The thresholds in the
+        # script gate the exit code — a regression below p(90)<1000 fails
+        # the step and therefore the PR check.
+        if: steps.detect.outputs.has_staging == 'true'
+        run: |
+          k6 run perf/cnas-baseline.js -e BASE_URL="${STAGING_BASE_URL}"
+
+      - name: Skip notice (no staging URL configured)
+        if: steps.detect.outputs.has_staging != 'true'
+        run: |
+          echo "::notice::perf-smoke skipped — STAGING_BASE_URL repository variable is not set."
+          echo "Configure it under Settings → Variables → Actions to enable the gate."

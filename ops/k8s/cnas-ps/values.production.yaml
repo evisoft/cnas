@@ -1,0 +1,180 @@
+# =============================================================================
+# values.production.yaml — production environment overrides (locked down).
+# =============================================================================
+# Production-only constraints:
+#   * vault.enabled MUST be true (no inline secrets).
+#   * podAntiAffinity REQUIRED (hard host spread) — at least 3 nodes must
+#     be available in the production cluster.
+#   * cert-manager TLS — staging-style manually-uploaded secrets are
+#     deliberately not used in production.
+#   * Aggressive resource limits — production traffic peaks per TOR PSR 003
+#     drive higher requests + limits than staging.
+# =============================================================================
+
+# Production hostname — REPLACE with the real CNAS FQDN BEFORE first deploy.
+ingress:
+  host: cnas-ps.example.gov.md
+  tls:
+    enabled: true
+    secretName: cnas-ps-prod-tls
+    certManager: true
+    clusterIssuer: cnas-issuer-prod
+
+# Tag MUST be set on the command line (CI emits the immutable SHA).
+image:
+  tag: ""
+
+replicaCount: 3
+
+hpa:
+  enabled: true
+  # Production minimum is 3 to survive a single-node drain without
+  # brownouts. Max 10 covers PSR 003 (2000 concurrent sessions) with the
+  # 40% safety margin documented in values.yaml.
+  minReplicas: 3
+  maxReplicas: 10
+
+pdb:
+  enabled: true
+  minAvailable: 2
+
+# R2118 — Vertical Pod Autoscaler (right-sizing of long-lived API pods).
+# In production we ship the VPA in observation-only mode (`Off`) by
+# default so the recommender records suggestions without restarting pods.
+# Flip `updateMode` to `Auto` after a 7-day observation window confirms
+# the recommendations are reasonable.
+autoscaling:
+  vpa:
+    enabled: true
+    updateMode: "Off"
+    minAllowed:
+      cpu: 250m
+      memory: 512Mi
+    maxAllowed:
+      cpu: "4"
+      memory: 8Gi
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: 2
+    memory: 2Gi
+
+# Pin to the production node pool. Override the toleration to match the
+# taint operators apply (`node.cnas.gov.md/pool=workload:NoSchedule`).
+nodeSelector:
+  node.cnas.gov.md/pool: workload
+tolerations:
+  - key: node.cnas.gov.md/pool
+    operator: Equal
+    value: workload
+    effect: NoSchedule
+
+# REQUIRED host spread — assumes ≥ 3 worker nodes in the production pool.
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: api
+        topologyKey: kubernetes.io/hostname
+
+config:
+  aspNetCoreEnvironment: Production
+  observability:
+    otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
+    environment: production
+    enableConsoleExporter: false
+  rateLimiting:
+    enabled: true
+    trustForwardedHeaders: true
+  mgov:
+    msignBaseUrl: "https://msign.gov.md"
+    mpayBaseUrl: "https://mpay.gov.md"
+    mconnectBaseUrl: "https://mconnect.gov.md"
+    mnotifyBaseUrl: "https://mnotify.gov.md"
+    mlogBaseUrl: "https://mlog.gov.md"
+    mdocsBaseUrl: "https://mdocs.gov.md"
+  mcabinet:
+    baseUrl: "https://mcabinet.gov.md"
+
+# vault.enabled MUST be true in production. The chart will render an
+# ExternalSecret pointing at the cluster's SecretStore — the actual
+# secret material never lands in YAML committed to git.
+vault:
+  enabled: true
+  refreshInterval: 30m
+  secretStoreRef:
+    name: cnas-prod-vault
+    kind: ClusterSecretStore
+  remoteKeys:
+    Cnas__FieldEncryption__Key: cnas/ps/prod/field-encryption-key
+    Cnas__FieldHashing__SaltKey: cnas/ps/prod/field-hashing-salt
+    ConnectionStrings__Postgres: cnas/ps/prod/postgres-conn
+    # MinIO options bind from `Minio:*` (MinioOptions.SectionName), NOT
+    # `Cnas:Storage:Minio:*` — the env-var prefix MUST match the binder.
+    Minio__AccessKey: cnas/ps/prod/minio-access-key
+    Minio__SecretKey: cnas/ps/prod/minio-secret-key
+    MINIO_ROOT_USER: cnas/ps/prod/minio-access-key
+    MINIO_ROOT_PASSWORD: cnas/ps/prod/minio-secret-key
+    Cnas__CallbackSignatures__MPay__SigningKey: cnas/ps/prod/callback-mpay-signing-key
+    Cnas__CallbackSignatures__MNotify__SigningKey: cnas/ps/prod/callback-mnotify-signing-key
+    Cnas__CallbackSignatures__MSign__SigningKey: cnas/ps/prod/callback-msign-signing-key
+    MGov__MPassClientSecret: cnas/ps/prod/mpass-client-secret
+    Cnas__MGov__Mtls__Certificates__msign__Password: cnas/ps/prod/mtls-msign
+    Cnas__MGov__Mtls__Certificates__mpay__Password: cnas/ps/prod/mtls-mpay
+    Cnas__MGov__Mtls__Certificates__mconnect__Password: cnas/ps/prod/mtls-mconnect
+    Cnas__MGov__Mtls__Certificates__mnotify__Password: cnas/ps/prod/mtls-mnotify
+    Cnas__MGov__Mtls__Certificates__mlog__Password: cnas/ps/prod/mtls-mlog
+    Cnas__MGov__Mtls__Certificates__mdocs__Password: cnas/ps/prod/mtls-mdocs
+    Cnas__MGov__Mtls__Certificates__mconnect-events__Password: cnas/ps/prod/mtls-mconnect-events
+    Cnas__MGov__Mtls__Certificates__mcabinet__Password: cnas/ps/prod/mtls-mcabinet
+
+postgres:
+  enabled: true
+  image:
+    # PIN a specific Spilo build in production (Zalando publishes a new
+    # tag per Postgres minor; -p2 is the build revision).
+    tag: "3.3-p2"
+  replicas: 3
+  storageClass: cnas-fast-ssd
+  storageSize: 250Gi
+  resources:
+    requests:
+      cpu: 1
+      memory: 4Gi
+    limits:
+      cpu: 4
+      memory: 8Gi
+  podAntiAffinity:
+    type: required
+
+minio:
+  enabled: true
+  distributed: true
+  replicas: 4
+  storageClass: cnas-fast-ssd
+  storageSize: 200Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+
+networkPolicies:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+  ingressControllerSelector:
+    app.kubernetes.io/name: ingress-nginx
+  # Production MGov VRF — CNAS-specific subnet allocation. REPLACE with
+  # the operator's actual CIDR before first deploy.
+  mgovEgressCidrs:
+    - 10.20.0.0/16
+  otlpCollectorCidrs:
+    - 10.96.0.0/12
+  dnsCidrs:
+    - 10.96.0.10/32

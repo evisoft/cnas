@@ -1,0 +1,62 @@
+{{/*
+=============================================================================
+HorizontalPodAutoscaler — API
+=============================================================================
+TOR R0038 mandates "API Deployment + HPA". The trade-off captured here:
+
+  * minReplicas: 3 — covers a single-node drain. Below 3 a rolling update
+    could briefly land on a single replica and a panic in that one pod
+    would dark-out the whole API.
+  * maxReplicas: 10 — derived from TOR PSR 003. PSR 003 demands the system
+    serves 2000 concurrent sessions. With Kestrel's default thread-pool
+    sizing each replica comfortably handles ~300 sessions; (2000 / 300)
+    plus a 40% safety margin → ~10 replicas at peak. Going beyond requires
+    a values overlay and a cluster-capacity review (memory limits multiply
+    against worker count quickly).
+  * CPU 70% / memory 80% target — CPU is the leading indicator for a JIT'd
+    ASP.NET workload; memory pressure shows up later as GC tail latency.
+    The combination scales out before either signal becomes a user-facing
+    incident.
+  * behavior.scaleUp aggressive (double pods/min), scaleDown conservative
+    (10% pods every 5 min). Asymmetric on purpose — bursting up is cheap;
+    evicting warm workers degrades latency for callers that landed on
+    those pods.
+=============================================================================
+*/}}
+{{- if .Values.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "cnas-ps.apiName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "cnas-ps.apiName" . }}
+  minReplicas: {{ .Values.hpa.minReplicas }}
+  maxReplicas: {{ .Values.hpa.maxReplicas }}
+  metrics:
+    {{- if .Values.hpa.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.hpa.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.hpa.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.hpa.targetMemoryUtilizationPercentage }}
+    {{- end }}
+  {{- with .Values.hpa.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,141 @@
+{{/*
+=============================================================================
+Deployment for the Cnas.Ps.Api service.
+=============================================================================
+Hardened per CLAUDE.md §5:
+  * runs as UID 1001 (matches Dockerfile.api),
+  * readOnlyRootFilesystem with emptyDir mounts for /tmp,
+  * capabilities dropped, no privilege escalation,
+  * resources requested + limited,
+  * liveness + readiness probes (separate endpoints),
+  * topology spread for HA across zones.
+
+Environment variables come from:
+  1. .Values.api.env       → ConfigMap rendered by configmap-api.yaml
+  2. .Values.api.envFromConfigMap → operator-supplied ConfigMap
+  3. .Values.api.envFromSecret    → operator-supplied Secret (REQUIRED for
+                                    DB credentials, JWT keys, etc.)
+
+Idempotent: re-applying with the same values is a no-op.
+=============================================================================
+*/}}
+{{- include "cnas-ps.validateImages" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cnas-ps.apiName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 8 }}
+      annotations:
+        {{- /* Roll the pods whenever the ConfigMap content changes. */}}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-api.yaml") . | sha256sum }}
+        {{- with .Values.commonAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "cnas-ps.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.api.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.service.targetPort }}
+              protocol: TCP
+          envFrom:
+            {{- if (.Values.api.env | default dict) }}
+            - configMapRef:
+                name: {{ include "cnas-ps.apiConfigName" . }}
+            {{- end }}
+            {{- if .Values.api.envFromConfigMap }}
+            - configMapRef:
+                name: {{ .Values.api.envFromConfigMap }}
+            {{- end }}
+            {{- if .Values.api.envFromSecret }}
+            - secretRef:
+                name: {{ .Values.api.envFromSecret }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.liveness.path }}
+              port: {{ .Values.api.probes.liveness.port }}
+            initialDelaySeconds: {{ .Values.api.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.api.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.api.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.api.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.readiness.path }}
+              port: {{ .Values.api.probes.readiness.port }}
+            initialDelaySeconds: {{ .Values.api.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.api.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.api.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.api.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            # /tmp must be writable for ASP.NET (DataProtection keys, etc.)
+            # even with readOnlyRootFilesystem.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

@@ -1,0 +1,145 @@
+@page "/inbox/supervisor"
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@inject CnasApiClient Api
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    R0381 / UC05 — supervisor workspace. Displays the team queue of tasks
+    assigned to peers of the calling supervisor with a per-row "reassign"
+    action. The actual reassign dialog is intentionally minimal in this
+    iteration (a prompt-style hidden helper); the heavy lifting is in the
+    API + service layer. State machine mirrors Inbox.razor for consistency:
+    Loading → Loaded | Error, with an Anonymous branch when the cascaded
+    session indicates no authenticated user.
+
+    Localisation keys live under the `Supervisor.*` namespace in
+    PagesResource.resx; the table renders stable data-testid hooks for the
+    bUnit suite to target.
+*@
+
+<PageTitle>@L["Supervisor.Title"]</PageTitle>
+
+<h1 data-testid="heading">@L["Supervisor.Title"]</h1>
+
+@if (!_session.IsAuthenticated)
+{
+    <p data-testid="anonymous-message">@L["Supervisor.Anonymous"]</p>
+}
+else if (_state == LoadState.Loading)
+{
+    <p data-testid="loading">@L["Supervisor.Loading"]</p>
+}
+else if (_state == LoadState.Error)
+{
+    <div class="alert alert-error" role="alert" data-testid="error-alert">
+        <strong>@L["Common.Error"]</strong>
+        <code>@_errorCode</code>
+        @if (!string.IsNullOrWhiteSpace(_errorDetail))
+        {
+            <p data-testid="error-detail">@_errorDetail</p>
+        }
+    </div>
+}
+else if (_result is null || _result.Items.Count == 0)
+{
+    <p data-testid="empty-queue">@L["Supervisor.Empty"]</p>
+}
+else
+{
+    <table class="team-queue" data-testid="team-queue-table">
+        <thead>
+            <tr>
+                <th>@L["Supervisor.ColTitle"]</th>
+                <th>@L["Supervisor.ColStatus"]</th>
+                <th>@L["Supervisor.ColAssignee"]</th>
+                <th>@L["Supervisor.ColDueAt"]</th>
+                <th>@L["Supervisor.ColActions"]</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var t in _result.Items)
+            {
+                <tr data-testid="team-task-row">
+                    <td>@t.Title</td>
+                    <td>@t.Status</td>
+                    <td>@(t.AssigneeDisplayName ?? "—")</td>
+                    <td>@(t.DueAtUtc?.ToString("yyyy-MM-dd") ?? "—")</td>
+                    <td>
+                        <button type="button"
+                                class="btn btn-secondary"
+                                data-testid="reassign-button"
+                                data-task-sqid="@t.Id">
+                            @L["Supervisor.ReassignButton"]
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    /// <summary>
+    /// Authenticated session cascaded by <c>MainLayout</c>. When the cascading
+    /// value is missing (e.g. in unit tests that don't wrap the component in
+    /// a layout) we treat the caller as anonymous and skip the API call.
+    /// </summary>
+    [CascadingParameter(Name = "Session")]
+    public UserSession Session { get; set; } = UserSession.Anonymous;
+
+    /// <summary>Local non-nullable copy used inside the markup.</summary>
+    private UserSession _session = UserSession.Anonymous;
+
+    /// <summary>Three-state load machine driving which branch renders.</summary>
+    private LoadState _state = LoadState.Loading;
+
+    /// <summary>Paged team-queue payload; non-null only when <see cref="_state"/> is <see cref="LoadState.Loaded"/>.</summary>
+    private PagedResult<SupervisorTeamTaskDto>? _result;
+
+    /// <summary>Stable error code surfaced by the API client when the request fails.</summary>
+    private string? _errorCode;
+
+    /// <summary>Server-provided error detail message, displayed inside the error alert when present.</summary>
+    private string? _errorDetail;
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        _session = Session;
+        if (!_session.IsAuthenticated)
+        {
+            _state = LoadState.Loaded;
+            return;
+        }
+
+        var r = await Api.GetSupervisorTeamQueueAsync(page: 1, pageSize: 20).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _errorCode = r.ErrorCode;
+            _errorDetail = r.ErrorMessage;
+            _state = LoadState.Error;
+            return;
+        }
+
+        _result = r.Value;
+        _state = LoadState.Loaded;
+    }
+
+    /// <summary>
+    /// Three-position state machine driving which markup branch renders:
+    /// the loading placeholder, the error alert, or the loaded list/empty state.
+    /// </summary>
+    private enum LoadState
+    {
+        /// <summary>The API call is in-flight; render the loading marker.</summary>
+        Loading,
+
+        /// <summary>The API call succeeded; render the list or the empty-state.</summary>
+        Loaded,
+
+        /// <summary>The API call failed; render the error alert.</summary>
+        Error,
+    }
+}

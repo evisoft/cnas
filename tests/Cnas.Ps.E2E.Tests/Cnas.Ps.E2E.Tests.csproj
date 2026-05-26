@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+    <PackageReference Include="Microsoft.Playwright" />
+    <PackageReference Include="coverlet.collector" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Cnas.Ps.Api\Cnas.Ps.Api.csproj" />
+    <ProjectReference Include="..\..\src\Cnas.Ps.Infrastructure\Cnas.Ps.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <!--
+    Cross-collection parallelism is intentionally re-enabled (no xunit.runner.json).
+    The original BUG-003 race over the EF Core compiled-model cache — where the
+    encryptor-less E2ECollection and the AesFieldEncryptor-backed
+    AuthenticatedE2ECollection collided on a shared cache key — is fixed at the
+    source by CnasModelCacheKeyFactory, which now discriminates on the wired
+    IFieldEncryptor's CLR type. See that class' remarks for the historical failure
+    mode this avoids.
+  -->
+
+</Project>

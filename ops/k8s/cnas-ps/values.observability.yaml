@@ -1,0 +1,161 @@
+# =============================================================================
+# R0040 / R2182 / TOR §15.5 PSR 015 + §4.4 — observability-stack overlay
+# =============================================================================
+#
+# This overlay layers ON TOP of the base `values.yaml` (and any environment
+# overlay such as `values.staging.yaml` / `values.production.yaml`). Apply it
+# alongside the umbrella chart that bundles the kube-prometheus-stack +
+# Loki + Grafana sub-charts so the SI-PS deployment ships with a complete
+# observability surface out of the box.
+#
+# Usage:
+#   helm upgrade --install cnas-ps ./ops/k8s/cnas-ps \
+#     -f ops/k8s/cnas-ps/values.yaml \
+#     -f ops/k8s/cnas-ps/values.production.yaml \
+#     -f ops/k8s/cnas-ps/values.observability.yaml
+#
+# The umbrella chart MUST declare the following sub-charts as dependencies in
+# its Chart.yaml (this file does NOT alter the base chart's Chart.yaml — the
+# top-level deployment workflow owns the umbrella):
+#   - prometheus (kube-prometheus-stack) — Prometheus + Alertmanager
+#   - grafana                            — Grafana dashboards portal
+#   - loki                               — Loki log aggregator
+#
+# Counters + gauges consumed by the dashboards listed in
+# docs/operations.md §"Metrics (R0040 partial close)" are emitted on the
+# `Cnas.Ps.Subsystems` OpenTelemetry meter and scraped by Prometheus via the
+# OpenTelemetry Collector — see ObservabilityOptions in the API host for the
+# OTLP endpoint binding (`Cnas:Observability:OtlpEndpoint`).
+# -----------------------------------------------------------------------------
+
+# Prometheus + Alertmanager — kube-prometheus-stack values surface.
+# Storage is sized for ~30 days of 15-second scrape granularity over the
+# SI-PS surface; bump the PVC size at scale-out time. Alertmanager is enabled
+# so the on-call signals listed in docs/operations.md §Metrics (R0040 partial
+# close) can route to PagerDuty / email / Slack receivers.
+prometheus:
+  server:
+    persistentVolume:
+      enabled: true
+      size: 10Gi
+      storageClass: cnas-ssd
+    retention: 30d
+    # Scrape SI-PS API pods via PodMonitor; the umbrella chart's
+    # serviceMonitor selector picks up labels = { app: cnas-ps-api }.
+    serviceMonitor:
+      enabled: true
+      interval: 15s
+      labels:
+        release: cnas-observability
+  alertmanager:
+    enabled: true
+    persistentVolume:
+      enabled: true
+      size: 1Gi
+      storageClass: cnas-ssd
+    # Receivers / route stay in a separate Secret (alertmanager.config) so
+    # PagerDuty integration keys never live in this Git-tracked overlay.
+    secretName: cnas-alertmanager-config
+  pushgateway:
+    enabled: false
+
+# Grafana — dashboards portal. Anonymous access is disabled; admin password
+# is sourced from a pre-existing Secret so it does not appear in this file.
+# Dashboards are provisioned from a ConfigMap built out of
+# ops/k8s/observability/dashboards/ (separate PR — owned by the umbrella
+# chart, not this base chart).
+grafana:
+  adminUser: admin
+  admin:
+    existingSecret: cnas-grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: cnas-ssd
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://cnas-observability-prometheus-server.observability.svc.cluster.local
+          isDefault: true
+        - name: Loki
+          type: loki
+          access: proxy
+          url: http://cnas-observability-loki.observability.svc.cluster.local:3100
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+
+# Loki — log aggregator. Single-binary mode is sufficient for the SI-PS
+# log volume (≤ 50 GB/day at p99); switch to scalable mode once volume
+# exceeds ~150 GB/day.
+loki:
+  deploymentMode: SingleBinary
+  loki:
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    storage:
+      type: filesystem
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: cnas-ssd
+  singleBinary:
+    replicas: 1
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClassName: cnas-ssd
+  # Serilog -> Loki bridge happens via the OpenTelemetry Collector sidecar
+  # (logs pipeline). The collector chart values live in
+  # `values.observability.collector.yaml` (a follow-up overlay).
+  monitoring:
+    selfMonitoring:
+      enabled: false
+    lokiCanary:
+      enabled: false
+
+# OpenTelemetry Collector — scrapes the SI-PS API meter + receives OTLP from
+# the API pods, then fan-outs to Prometheus (metrics), Loki (logs), and the
+# umbrella Tempo (traces). Defaults below keep the collector light; bump
+# resources at scale-out.
+opentelemetry-collector:
+  mode: deployment
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    exporters:
+      prometheus:
+        endpoint: 0.0.0.0:9464
+      loki:
+        endpoint: http://cnas-observability-loki.observability.svc.cluster.local:3100/loki/api/v1/push
+    service:
+      pipelines:
+        metrics:
+          receivers: [otlp]
+          exporters: [prometheus]
+        logs:
+          receivers: [otlp]
+          exporters: [loki]

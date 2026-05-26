@@ -1,0 +1,28 @@
+{{/*
+=============================================================================
+Service for the Web (Blazor WASM) front-end.
+=============================================================================
+ClusterIP by default — exposure is via the Ingress.
+Idempotent.
+=============================================================================
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cnas-ps.webName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "web") | nindent 4 }}
+  {{- with .Values.web.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.web.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.web.service.port }}
+      targetPort: {{ .Values.web.service.targetPort }}
+      protocol: TCP
+  selector:
+    {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "web") | nindent 4 }}

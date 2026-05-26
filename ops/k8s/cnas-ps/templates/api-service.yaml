@@ -1,0 +1,30 @@
+{{/*
+=============================================================================
+Service — ClusterIP fronting the API pods.
+=============================================================================
+ClusterIP only; the Ingress is the public entry point. Targets the API
+container port 8080 so the API can listen on whatever sub-path the Ingress
+strips. No LoadBalancer / NodePort by design — exposing the API to the
+underlay would bypass the Ingress' XFF rewrite and TLS termination.
+=============================================================================
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cnas-ps.apiName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+  selector:
+    {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 4 }}

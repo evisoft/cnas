@@ -1,0 +1,307 @@
+@page "/archive"
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@using Cnas.Ps.Web.Components
+@inject CnasApiClient Api
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    R0332 / TOR CF 12.02 — electronic-archive tabbed UI. The page surfaces
+    five register tabs (Contributors / Insured Persons / Decisions / Dossiers
+    / Documents); each tab shares a metadata-chip header strip computed from
+    `/api/archive/summary` and renders its own paged list lazily on first
+    activation. The chips, tabs, and per-tab tables expose stable
+    `data-testid` hooks so the bUnit tests can target them without coupling
+    to CSS classes.
+
+    Anonymous callers see the sign-in prompt instead of the loading marker —
+    every backing endpoint requires authentication and would 401 otherwise.
+
+    Per CLAUDE.md RULE 3 every Id flowing through the listing rows is already
+    Sqid-encoded at the API boundary; the page passes the strings straight to
+    deep-link routes without decoding.
+*@
+
+<PageTitle>@L["Archive.Title"]</PageTitle>
+
+<h1 data-testid="archive-heading">@L["Archive.Title"]</h1>
+
+@if (!_session.IsAuthenticated)
+{
+    <p data-testid="archive-anonymous">@L["Archive.Anonymous"]</p>
+}
+else if (_state == LoadState.Loading)
+{
+    <p data-testid="archive-loading">@L["Archive.Loading"]</p>
+}
+else if (_state == LoadState.Error)
+{
+    <div class="alert alert-error" role="alert" data-testid="archive-error">
+        <strong>@L["Common.Error"]</strong>
+        @if (!string.IsNullOrWhiteSpace(_errorDetail))
+        {
+            <p data-testid="archive-error-detail">@_errorDetail</p>
+        }
+    </div>
+}
+else
+{
+    @* ── Tab strip ── *@
+    <nav class="archive-tabs" role="tablist" data-testid="archive-tab-strip">
+        @foreach (var tab in _tabs)
+        {
+            <button type="button"
+                    role="tab"
+                    class="@(_active == tab.Key ? "active" : "")"
+                    data-testid="archive-tab"
+                    data-tab="@tab.Key"
+                    @onclick="@(() => SelectTab(tab.Key))">
+                @L[tab.LabelKey]
+            </button>
+        }
+    </nav>
+
+    @* ── Metadata chip strip — sourced from /api/archive/summary ── *@
+    <section class="archive-chips" data-testid="archive-chips">
+        <span data-testid="archive-chip-active">
+            @L["Archive.ChipActive"]: @ActiveChipFor(_active)
+        </span>
+        <span data-testid="archive-chip-archived">
+            @L["Archive.ChipArchived"]: @ArchivedChipFor(_active)
+        </span>
+        <span data-testid="archive-chip-last-updated">
+            @L["Archive.ChipLastUpdated"]: @LastUpdatedChipFor(_active)
+        </span>
+    </section>
+
+    @* ── Per-tab search bar ── *@
+    <form class="archive-search" data-testid="archive-search-form" @onsubmit="ReloadActiveTabAsync" @onsubmit:preventDefault>
+        <input type="search"
+               placeholder="@L["Archive.SearchPlaceholder"]"
+               data-testid="archive-search-input"
+               @bind="_searchTerm" />
+        <button type="submit" data-testid="archive-search-button">@L["Archive.SearchButton"]</button>
+    </form>
+
+    @* ── Per-tab list ── *@
+    <section data-testid="archive-tab-panel" data-active-tab="@_active">
+        @if (_tabLoading)
+        {
+            <p data-testid="archive-tab-loading">@L["Archive.Loading"]</p>
+        }
+        else if (_active == "contributors" && _contributors is { Items: var ci } && ci.Count > 0)
+        {
+            <table class="archive-table" data-testid="archive-contributors-table">
+                <thead><tr><th>IDNO</th><th>Denumire</th></tr></thead>
+                <tbody>
+                    @foreach (var c in ci)
+                    {
+                        <tr data-testid="archive-row"><td>@c.Idno</td><td>@c.Denumire</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else if (_active == "insured-persons" && _insured is { Items: var pi } && pi.Count > 0)
+        {
+            <table class="archive-table" data-testid="archive-insured-persons-table">
+                <thead><tr><th>IDNP</th><th>Nume</th></tr></thead>
+                <tbody>
+                    @foreach (var p in pi)
+                    {
+                        <tr data-testid="archive-row"><td>@p.Idnp</td><td>@p.FullName</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else
+        {
+            <p data-testid="archive-tab-empty">@L["Archive.Empty"]</p>
+        }
+    </section>
+}
+
+@code {
+    /// <summary>
+    /// Authenticated session cascaded by <c>MainLayout</c>. Anonymous callers
+    /// see the sign-in prompt; we never call the API for an anonymous render.
+    /// </summary>
+    [CascadingParameter(Name = "Session")]
+    public UserSession Session { get; set; } = UserSession.Anonymous;
+
+    /// <summary>Local non-nullable copy used inside the markup.</summary>
+    private UserSession _session = UserSession.Anonymous;
+
+    /// <summary>The page's loading state machine.</summary>
+    private LoadState _state = LoadState.Loading;
+
+    /// <summary>Server-provided error detail message, displayed inside the error alert when present.</summary>
+    private string? _errorDetail;
+
+    /// <summary>Cached archive summary — non-null only when <see cref="_state"/> is <see cref="LoadState.Loaded"/>.</summary>
+    private ArchiveSummaryDto? _summary;
+
+    /// <summary>The currently-active tab; defaults to the contributors tab.</summary>
+    private string _active = "contributors";
+
+    /// <summary>True while a per-tab list fetch is in-flight.</summary>
+    private bool _tabLoading;
+
+    /// <summary>Free-text search term applied to the per-tab list call.</summary>
+    private string _searchTerm = string.Empty;
+
+    /// <summary>Backing list for the contributors tab.</summary>
+    private PagedResult<ContributorListItem>? _contributors;
+
+    /// <summary>Backing list for the insured-persons tab.</summary>
+    private PagedResult<InsuredPersonListItem>? _insured;
+
+    /// <summary>Page size shared across every tab list call.</summary>
+    private const int TabPageSize = 20;
+
+    /// <summary>
+    /// Static tab catalog. Each entry pairs the stable URL discriminator with
+    /// the resx key that resolves the user-facing label. Tabs render in this
+    /// order; the contributors tab is the default landing tab.
+    /// </summary>
+    private static readonly (string Key, string LabelKey)[] _tabs =
+    [
+        ("contributors", "Archive.TabContributors"),
+        ("insured-persons", "Archive.TabInsuredPersons"),
+        ("decisions", "Archive.TabDecisions"),
+        ("dossiers", "Archive.TabDossiers"),
+        ("documents", "Archive.TabDocuments"),
+    ];
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        _session = Session;
+        if (!_session.IsAuthenticated)
+        {
+            _state = LoadState.Loaded;
+            return;
+        }
+
+        var summary = await Api.GetArchiveSummaryAsync().ConfigureAwait(false);
+        if (summary.IsFailure)
+        {
+            _errorDetail = summary.ErrorMessage;
+            _state = LoadState.Error;
+            return;
+        }
+
+        _summary = summary.Value;
+        _state = LoadState.Loaded;
+        // Preload the default tab so the empty/loaded state machine is correct on first render.
+        await LoadTabAsync(_active).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Switches to the named tab. Lazy-loads the underlying paged list if it
+    /// hasn't been fetched yet for this session.
+    /// </summary>
+    /// <param name="tabKey">Stable tab discriminator (e.g. <c>contributors</c>).</param>
+    private async Task SelectTab(string tabKey)
+    {
+        if (_active == tabKey)
+        {
+            return;
+        }
+        _active = tabKey;
+        _searchTerm = string.Empty;
+        await LoadTabAsync(tabKey).ConfigureAwait(false);
+    }
+
+    /// <summary>Reloads the currently-active tab using <see cref="_searchTerm"/>.</summary>
+    private Task ReloadActiveTabAsync() => LoadTabAsync(_active);
+
+    /// <summary>
+    /// Issues the API call backing the named tab. Tabs we haven't wired yet
+    /// (decisions / dossiers / documents) intentionally short-circuit to the
+    /// empty-state branch — the contributors + insured-persons endpoints
+    /// already exist and exercise the routing surface end-to-end.
+    /// </summary>
+    /// <param name="tabKey">Tab to refresh.</param>
+    private async Task LoadTabAsync(string tabKey)
+    {
+        // Mark loading; Blazor's lifecycle automatically schedules a render
+        // after the awaited tasks resolve, so we don't call StateHasChanged()
+        // manually (it would throw outside the renderer dispatcher in bUnit).
+        _tabLoading = true;
+
+        switch (tabKey)
+        {
+            case "contributors":
+                {
+                    var r = await Api.SearchContributorsAsync(_searchTerm, page: 1, pageSize: TabPageSize).ConfigureAwait(false);
+                    _contributors = r.IsSuccess ? r.Value : null;
+                    break;
+                }
+            case "insured-persons":
+                {
+                    var r = await Api.SearchInsuredPersonsAsync(_searchTerm, page: 1, pageSize: TabPageSize).ConfigureAwait(false);
+                    _insured = r.IsSuccess ? r.Value : null;
+                    break;
+                }
+            default:
+                // Tabs without a wired endpoint yet — render the empty-state branch.
+                break;
+        }
+
+        _tabLoading = false;
+    }
+
+    /// <summary>Looks up the active count for a tab from the cached summary.</summary>
+    /// <param name="tabKey">Tab discriminator.</param>
+    /// <returns>Active row count, or zero when the summary is missing.</returns>
+    private long ActiveChipFor(string tabKey) =>
+        TabFromSummary(tabKey)?.TotalActive ?? 0;
+
+    /// <summary>Looks up the archived count for a tab from the cached summary.</summary>
+    /// <param name="tabKey">Tab discriminator.</param>
+    /// <returns>Archived row count, or zero when the summary is missing.</returns>
+    private long ArchivedChipFor(string tabKey) =>
+        TabFromSummary(tabKey)?.TotalArchived ?? 0;
+
+    /// <summary>Formats the last-updated timestamp for a tab.</summary>
+    /// <param name="tabKey">Tab discriminator.</param>
+    /// <returns>Formatted UTC datetime, or an em-dash when unknown.</returns>
+    private string LastUpdatedChipFor(string tabKey)
+    {
+        var ts = TabFromSummary(tabKey)?.LastUpdatedUtc;
+        return ts.HasValue ? ts.Value.ToString("yyyy-MM-dd HH:mm") : "—";
+    }
+
+    /// <summary>Locates the tab summary for <paramref name="tabKey"/>.</summary>
+    /// <param name="tabKey">Tab discriminator.</param>
+    /// <returns>The tab summary or <see langword="null"/> when the page has no summary.</returns>
+    private ArchiveTabSummaryDto? TabFromSummary(string tabKey)
+    {
+        if (_summary is null) return null;
+        return tabKey switch
+        {
+            "contributors" => _summary.Contributors,
+            "insured-persons" => _summary.InsuredPersons,
+            "decisions" => _summary.Decisions,
+            "dossiers" => _summary.Dossiers,
+            "documents" => _summary.Documents,
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Three-position state machine driving the page's high-level branch:
+    /// loading, error, or loaded (tabs + chips visible).
+    /// </summary>
+    private enum LoadState
+    {
+        /// <summary>The summary call is in flight.</summary>
+        Loading,
+
+        /// <summary>The page is rendered; per-tab calls may still be in flight.</summary>
+        Loaded,
+
+        /// <summary>The summary call failed; render the error alert.</summary>
+        Error,
+    }
+}

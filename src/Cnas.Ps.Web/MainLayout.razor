@@ -1,0 +1,107 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject CookieAuthState AuthState
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    Top-level layout for the citizen portal. Cascades the current UserSession to every
+    descendant page so they can branch on authentication without re-probing the API.
+    NavBar + side nav + logout live here so pages stay focused on their domain.
+*@
+
+<CascadingValue Value="_session" Name="Session">
+    <div class="layout">
+        <header class="navbar" role="banner">
+            <div class="brand">
+                <a href="/" class="brand-link">@L["App.Title"]</a>
+            </div>
+            <nav class="primary" role="navigation" aria-label="primary">
+                @if (_session.IsAuthenticated)
+                {
+                    <span class="who" data-testid="who">@_session.DisplayName</span>
+                    <button type="button" class="logout" @onclick="OnLogoutAsync">@L["Nav.Logout"]</button>
+                }
+            </nav>
+        </header>
+
+        <div class="shell">
+            @if (_session.IsAuthenticated)
+            {
+                <aside class="sidenav" role="navigation" aria-label="secondary">
+                    <ul>
+                        <li><NavLink href="/dashboard" Match="NavLinkMatch.All">@L["Nav.Dashboard"]</NavLink></li>
+                        <li><NavLink href="/applications">@L["Nav.Applications"]</NavLink></li>
+                        <li><NavLink href="/profile/me">@L["Nav.Profile"]</NavLink></li>
+                    </ul>
+                </aside>
+            }
+
+            <main class="content" role="main">
+                @Body
+            </main>
+        </div>
+
+        @* R0170 / TOR CF 22.02 — global toast container. Rendered on every page;
+           re-renders whenever IClientToastQueue.Changed fires. *@
+        <ToastNotificationHost />
+    </div>
+</CascadingValue>
+
+@code {
+    /// <summary>Cached session for the current render; refreshed at most once per <see cref="CookieAuthState.CacheTtl"/>.</summary>
+    private UserSession _session = UserSession.Anonymous;
+
+    /// <summary>
+    /// Cancellation source tied to the layout's lifetime. Aborts any in-flight logout
+    /// POST when the layout is disposed (e.g. when the user navigates away mid-request)
+    /// so the HTTP call does not outlive its caller.
+    /// </summary>
+    private readonly CancellationTokenSource _cts = new();
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        _session = await AuthState.GetSessionAsync(_cts.Token).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// POSTs to <c>/api/auth/logout</c> via <see cref="CnasApiClient.LogoutAsync(CancellationToken)"/>,
+    /// clears the cached session, and navigates back to landing. Errors are swallowed —
+    /// the user is still treated as logged-out locally so a transient API failure cannot
+    /// strand them in a half-authenticated state.
+    /// </summary>
+    /// <remarks>
+    /// CSRF: the backend authenticates via a SameSite cookie, so a cross-origin POST
+    /// to /api/auth/logout would not carry the auth cookie and therefore cannot be
+    /// abused. No anti-forgery token is required for this endpoint.
+    /// </remarks>
+    private async Task OnLogoutAsync()
+    {
+        try
+        {
+            // Result is swallowed intentionally — even on failure we want the
+            // client to forget the session and bounce back to the landing page.
+            _ = await Api.LogoutAsync(_cts.Token).ConfigureAwait(false);
+        }
+        catch (HttpRequestException)
+        {
+            // Transport failure — logout is best-effort from the client.
+        }
+        catch (TaskCanceledException)
+        {
+            // Layout disposed while the call was in flight — abandon gracefully.
+        }
+
+        AuthState.Invalidate();
+        Navigation.NavigateTo("/", forceLoad: true);
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+}

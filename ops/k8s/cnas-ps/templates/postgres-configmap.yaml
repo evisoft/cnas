@@ -1,0 +1,58 @@
+{{/*
+=============================================================================
+ConfigMap — Patroni / Spilo configuration.
+=============================================================================
+Patroni reads cluster-level knobs from environment variables baked by Spilo
+plus a ConfigMap key (`patroni.yaml` here, named with the cluster scope) for
+the bootstrap stanza. The bootstrap stanza below is intentionally minimal —
+production should layer `postgresql.parameters` overrides via values.
+
+Key invariants:
+  * SCOPE matches PATRONI_SCOPE in the StatefulSet env. Renaming it forks
+    the DCS state and orphans existing followers.
+  * `pg_hba` entries are scoped to the headless service's pod IPs — peer
+    auth between Patroni-managed members and md5 auth for the application
+    user. NEVER add `trust` rules.
+=============================================================================
+*/}}
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cnas-ps.postgresConfigName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+data:
+  # Patroni bootstrap — applied only on initial cluster creation. Edits
+  # here AFTER bootstrap are no-ops; subsequent changes go through
+  # `patronictl edit-config`.
+  patroni-bootstrap.yaml: |
+    scope: {{ include "cnas-ps.postgresName" . }}
+    bootstrap:
+      dcs:
+        ttl: 30
+        loop_wait: 10
+        retry_timeout: 10
+        maximum_lag_on_failover: 1048576
+        postgresql:
+          use_pg_rewind: true
+          parameters:
+            wal_level: replica
+            hot_standby: "on"
+            max_connections: 200
+            max_wal_senders: 10
+            max_replication_slots: 10
+            # Use SSL even on the in-cluster network — defence-in-depth
+            # against a NetworkPolicy misconfiguration.
+            ssl: "on"
+      initdb:
+        - encoding: UTF8
+        - locale: en_US.UTF-8
+        - data-checksums
+      pg_hba:
+        # Patroni peers — same labels as the StatefulSet selector.
+        - host replication {{ .Values.postgres.replicationUsername }} all md5
+        - host all {{ .Values.postgres.applicationUsername }} all md5
+        - host all all all reject
+{{- end }}

@@ -1,0 +1,101 @@
+# =============================================================================
+# values.staging.yaml — staging environment overrides.
+# =============================================================================
+# Designed for the cnas-ps-staging cluster: smaller footprint, secrets
+# inlined for convenience (NOT production secrets — staging-only), one
+# Postgres replica per spread group to fit a 2-node staging cluster.
+# =============================================================================
+
+# Staging hostname — replace with the real CNAS staging FQDN.
+ingress:
+  host: cnas-ps.staging.example.gov.md
+  tls:
+    enabled: true
+    secretName: cnas-ps-staging-tls
+    certManager: true
+    clusterIssuer: letsencrypt-staging
+
+# Image tag SHOULD be set on the command line (--set image.tag=...). This
+# default exists only so `helm template -f values.staging.yaml` renders for
+# local validation; CI overrides it with the actual git SHA.
+image:
+  tag: "staging-latest"
+
+# 2 replicas — staging traffic is < 10% of production; min replicas covers
+# rolling deploys without a full quorum.
+replicaCount: 2
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+config:
+  aspNetCoreEnvironment: Staging
+  observability:
+    otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"
+    environment: staging
+    enableConsoleExporter: false
+  rateLimiting:
+    enabled: true
+    # Staging permits a higher anonymous limit so smoke-test scripts can
+    # hammer the API without throttling.
+    anonymousPermitLimit: 60
+  mgov:
+    # Staging integrates with the MGov sandbox endpoints.
+    msignBaseUrl: "https://msign.staging.egov.md"
+    mpayBaseUrl: "https://mpay.staging.egov.md"
+    mconnectBaseUrl: "https://mconnect.staging.egov.md"
+
+# vault.enabled=false in staging — inline secrets via stringData. The
+# values below are PLACEHOLDERS; CI replaces them via `--set-file` from
+# the staging secrets vault.
+vault:
+  enabled: false
+
+secret:
+  inline:
+    # All keys here are placeholders — CI overrides them.
+    fieldEncryptionKey: "U0FNUExFLU9OTFktUExFQVNFLVNVUFBMWS1WSUE6VEEtVkFVTFQ="
+    fieldHashingSaltKey: "U0FNUExFLU9OTFktUExFQVNFLVNVUFBMWS1WSUE6VEEtVkFVTFQ="
+    minioAccessKey: "minio-staging"
+    minioSecretKey: "REPLACE_AT_DEPLOY_TIME"
+    callbackMpaySigningKey: "REPLACE_AT_DEPLOY_TIME"
+    callbackMnotifySigningKey: "REPLACE_AT_DEPLOY_TIME"
+    callbackMsignSigningKey: "REPLACE_AT_DEPLOY_TIME"
+    connectionStringsPostgres: ""
+
+postgres:
+  enabled: true
+  replicas: 2
+  storageSize: 50Gi
+
+minio:
+  enabled: true
+  # Distributed mode on; 4 replicas is the minimum erasure-coded layout
+  # even for staging, so a single pod restart does not lose any uploads.
+  distributed: true
+  replicas: 4
+  storageSize: 20Gi
+
+networkPolicies:
+  enabled: true
+  # Staging Ingress controller lives in the same default ns as the prod one.
+  ingressControllerNamespace: ingress-nginx
+  # MGov sandbox VRF — narrower CIDR than production.
+  mgovEgressCidrs:
+    - 10.10.0.0/16
+  otlpCollectorCidrs:
+    - 10.96.0.0/12

@@ -1,0 +1,46 @@
+{{/*
+=============================================================================
+Service — MinIO API + Console.
+=============================================================================
+Two ports under a single ClusterIP service:
+
+  * 9000 (api)     — S3-compatible API. The CNAS API uses this. The
+                     application's Minio:Endpoint defaults to
+                     <release>-minio:9000.
+  * 9001 (console) — MinIO Web UI. Optional — left exposed via service so
+                     ops can port-forward; do NOT expose via Ingress
+                     (TOR R0038 only specifies API ingress, and the MinIO
+                     console has been a frequent CVE target).
+
+The distributed StatefulSet also requires this service to act as a
+*headless* peer-discovery service. We make it clusterIP (not None) because
+the API still needs a stable VIP to connect to — distributed peer DNS goes
+through `<sts>-<n>.<service>` which works whether the service is headless
+or not.
+=============================================================================
+*/}}
+{{- if .Values.minio.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cnas-ps.minioName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "minio") | nindent 4 }}
+spec:
+  type: ClusterIP
+  # publishNotReadyAddresses=true lets distributed members discover each
+  # other DURING the initial cluster formation when no pod is yet "ready".
+  publishNotReadyAddresses: {{ .Values.minio.distributed }}
+  ports:
+    - name: api
+      port: {{ .Values.minio.apiPort }}
+      targetPort: api
+      protocol: TCP
+    - name: console
+      port: {{ .Values.minio.consolePort }}
+      targetPort: console
+      protocol: TCP
+  selector:
+    {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "minio") | nindent 4 }}
+{{- end }}

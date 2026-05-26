@@ -1,0 +1,238 @@
+@page "/admin/business-rules/{PassportCode}"
+@using Microsoft.AspNetCore.Authorization
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@attribute [Authorize(Policy = "CnasAdmin")]
+@inject CnasApiClient Api
+
+@*
+    R0141 / TOR CF 15.03 — admin business-rule editor.
+
+    Page surfaces the per-passport business-rule registry stored inside
+    ServicePassport.DecisionRulesJson. Operators can list, add / edit, and
+    delete individual rules without hand-editing the JSON column.
+
+    Authorisation is enforced server-side (the underlying endpoints are
+    gated by the cnas-admin policy); the client surfaces a 401/403 / 500 as
+    an inline error rather than crashing.
+*@
+
+<PageTitle>Business rule editor (R0141)</PageTitle>
+
+<header class="page-header">
+    <h1>Business rules — @PassportCode</h1>
+    <p class="hint">
+        TOR CF 15.03 — applicant-type-aware business rules executed by the decision
+        engine when applications for this service are submitted.
+    </p>
+</header>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="rules-error">
+        <strong>Error</strong> <code>@_error</code>
+    </div>
+}
+
+@if (_rules is null && _error is null)
+{
+    <p data-testid="rules-loading">Loading...</p>
+}
+else if (_rules is not null && _rules.Count == 0)
+{
+    <p data-testid="rules-empty-state">No business rules configured for this passport yet.</p>
+}
+else if (_rules is not null)
+{
+    <table class="rules-table" data-testid="rules-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Applicant</th>
+                <th>Outcome</th>
+                <th>Notes</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var rule in _rules)
+            {
+                <tr data-testid="rules-row">
+                    <td>@rule.Name</td>
+                    <td>@rule.ApplicantType</td>
+                    <td>@rule.DecisionOutcome</td>
+                    <td>@(rule.Notes ?? string.Empty)</td>
+                    <td>
+                        <button type="button" class="link" data-testid="rules-edit"
+                                @onclick="() => StartEdit(rule)">Edit</button>
+                        <button type="button" class="link" data-testid="rules-delete"
+                                @onclick="() => DeleteAsync(rule.Id)">Delete</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<section class="rules-form" data-testid="rules-form">
+    <h2>@(_editing?.Id is null ? "Add rule" : "Edit rule")</h2>
+
+    <label>
+        <span>Name</span>
+        <input type="text" data-testid="rules-name"
+               @bind="_form.Name" />
+    </label>
+
+    <label>
+        <span>Applicant type</span>
+        <select data-testid="rules-applicant-type" @bind="_form.ApplicantType">
+            <option value="@BusinessRuleApplicantType.Natural">Natural</option>
+            <option value="@BusinessRuleApplicantType.Legal">Legal</option>
+            <option value="@BusinessRuleApplicantType.Both">Both</option>
+        </select>
+    </label>
+
+    <label>
+        <span>Decision outcome</span>
+        <select data-testid="rules-outcome" @bind="_form.DecisionOutcome">
+            <option value="@BusinessRuleDecisionOutcome.Granted">Granted</option>
+            <option value="@BusinessRuleDecisionOutcome.Rejected">Rejected</option>
+            <option value="@BusinessRuleDecisionOutcome.RequiresReview">RequiresReview</option>
+        </select>
+    </label>
+
+    <label>
+        <span>Condition JSON</span>
+        <textarea rows="6" data-testid="rules-condition"
+                  @bind="_form.ConditionJson"></textarea>
+    </label>
+
+    <label>
+        <span>Notes</span>
+        <textarea rows="2" data-testid="rules-notes"
+                  @bind="_form.Notes"></textarea>
+    </label>
+
+    <div class="actions">
+        <button type="button" class="primary" data-testid="rules-save"
+                @onclick="SaveAsync">Save</button>
+        @if (_editing?.Id is not null)
+        {
+            <button type="button" class="link" data-testid="rules-cancel"
+                    @onclick="CancelEdit">Cancel</button>
+        }
+    </div>
+</section>
+
+@code {
+    /// <summary>Stable passport code addressed by this editor page (route segment).</summary>
+    [Parameter]
+    public string PassportCode { get; set; } = string.Empty;
+
+    /// <summary>Current loaded list (null while initial fetch is in flight).</summary>
+    private IReadOnlyList<BusinessRuleDto>? _rules;
+
+    /// <summary>Inline error shown when the API call fails.</summary>
+    private string? _error;
+
+    /// <summary>Rule currently under edit; null when creating a new rule.</summary>
+    private BusinessRuleDto? _editing;
+
+    /// <summary>Editable form state — bound to the inputs below.</summary>
+    private RuleFormModel _form = new();
+
+    /// <inheritdoc />
+    protected override Task OnInitializedAsync() => ReloadAsync();
+
+    /// <summary>Refetches the rules from the API and resets the inline error.</summary>
+    private async Task ReloadAsync()
+    {
+        _error = null;
+        var r = await Api.ListBusinessRulesAsync(PassportCode).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _error = r.ErrorCode;
+            _rules = null;
+            return;
+        }
+        _rules = r.Value;
+    }
+
+    /// <summary>Loads the supplied rule into the form for editing.</summary>
+    /// <param name="rule">The rule to edit.</param>
+    private void StartEdit(BusinessRuleDto rule)
+    {
+        _editing = rule;
+        _form = new RuleFormModel
+        {
+            Name = rule.Name,
+            ApplicantType = rule.ApplicantType,
+            DecisionOutcome = rule.DecisionOutcome,
+            ConditionJson = rule.ConditionJson,
+            Notes = rule.Notes,
+        };
+    }
+
+    /// <summary>Resets the form back to the create branch.</summary>
+    private void CancelEdit()
+    {
+        _editing = null;
+        _form = new RuleFormModel();
+    }
+
+    /// <summary>POSTs the current form state to the upsert endpoint.</summary>
+    private async Task SaveAsync()
+    {
+        _error = null;
+        var input = new BusinessRuleInputDto(
+            Id: _editing?.Id,
+            Name: _form.Name,
+            ApplicantType: _form.ApplicantType,
+            ConditionJson: string.IsNullOrWhiteSpace(_form.ConditionJson) ? "{}" : _form.ConditionJson,
+            DecisionOutcome: _form.DecisionOutcome,
+            Notes: string.IsNullOrWhiteSpace(_form.Notes) ? null : _form.Notes);
+
+        var result = await Api.UpsertBusinessRuleAsync(PassportCode, input).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            _error = result.ErrorCode;
+            return;
+        }
+
+        CancelEdit();
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Sends a DELETE for the addressed rule id.</summary>
+    /// <param name="ruleId">Opaque stable rule id.</param>
+    private async Task DeleteAsync(string ruleId)
+    {
+        _error = null;
+        var result = await Api.DeleteBusinessRuleAsync(PassportCode, ruleId).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            _error = result.ErrorCode;
+            return;
+        }
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Form-state container for the editor inputs.</summary>
+    private sealed class RuleFormModel
+    {
+        /// <summary>Operator-visible rule name.</summary>
+        public string Name { get; set; } = string.Empty;
+
+        /// <summary>Applicant-type filter.</summary>
+        public BusinessRuleApplicantType ApplicantType { get; set; } = BusinessRuleApplicantType.Both;
+
+        /// <summary>Decision outcome when the condition matches.</summary>
+        public BusinessRuleDecisionOutcome DecisionOutcome { get; set; } = BusinessRuleDecisionOutcome.RequiresReview;
+
+        /// <summary>JSON condition expression.</summary>
+        public string ConditionJson { get; set; } = "{}";
+
+        /// <summary>Optional operator note.</summary>
+        public string? Notes { get; set; }
+    }
+}

@@ -1,0 +1,230 @@
+@page "/archive/contributors/{Sqid}"
+@using Microsoft.AspNetCore.Authorization
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@attribute [Authorize]
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+
+@*
+    R0611 / TOR CF 12.02 — per-record tabbed detail UI for an Annex-1
+    contributor row. Four tabs render in this order:
+      1. Identity        — primary attributes from GET /api/contributors/{id}
+      2. Contributions   — source-history rows from
+                           GET /api/contributors/{sqid}/source-history
+      3. Documents       — issued documents linked to the contributor (R0621
+                           reuses the same shape; this view simply scopes by
+                           the contributor sqid for now)
+      4. Audit History   — placeholder list of recent audit rows (the audit
+                           endpoint is gated by the per-resource policy and is
+                           expected to land in a follow-up batch); the tab
+                           renders an explicit empty-state until then.
+
+    Each tab carries an Export button that POSTs to the existing per-tab
+    export endpoint via the iter-125 RegistryExportProjection pipeline; the
+    response is streamed back as CSV / XLSX so the user gets a file dialog.
+
+    Per CLAUDE.md RULE 3 every id flowing through this page is a Sqid; the
+    route segment is decoded by the backend, never by the page.
+*@
+
+<PageTitle>Contributor @Sqid</PageTitle>
+
+<header class="page-header">
+    <a href="/archive" class="back-link">&laquo; Archive</a>
+    <h1 data-testid="cd-heading">Contributor <code>@Sqid</code></h1>
+</header>
+
+@if (_loadError is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="cd-load-error">
+        <strong>Failed to load</strong> <code>@_loadError</code>
+    </div>
+}
+else if (_detail is null)
+{
+    <p data-testid="cd-loading">Loading…</p>
+}
+else
+{
+    @* ── Tab strip ── *@
+    <nav class="cd-tabs" role="tablist" data-testid="cd-tab-strip">
+        @foreach (var tab in Tabs)
+        {
+            <button type="button"
+                    role="tab"
+                    class="@(_active == tab.Key ? "active" : "")"
+                    data-testid="cd-tab"
+                    data-tab="@tab.Key"
+                    @onclick="@(() => SelectTab(tab.Key))">
+                @tab.Label
+            </button>
+        }
+    </nav>
+
+    @* ── Active tab panel ── *@
+    <section data-testid="cd-tab-panel" data-active-tab="@_active">
+        <div class="cd-toolbar">
+            <button type="button"
+                    data-testid="cd-export"
+                    data-tab="@_active"
+                    @onclick="ExportActiveTabAsync"
+                    disabled="@_exporting">
+                Export
+            </button>
+            @if (_exported)
+            {
+                <span class="success-inline" data-testid="cd-export-ok">Export started.</span>
+            }
+            @if (_exportError is not null)
+            {
+                <span class="alert-inline" data-testid="cd-export-error">
+                    <code>@_exportError</code>
+                </span>
+            }
+        </div>
+
+        @if (_active == "identity")
+        {
+            <dl class="cd-identity" data-testid="cd-identity">
+                <dt>IDNO</dt><dd data-testid="cd-identity-idno">@_detail.Idno</dd>
+                <dt>Denumire</dt><dd data-testid="cd-identity-denumire">@_detail.Denumire</dd>
+                <dt>CFOJ</dt><dd>@(_detail.CfojCode ?? "—")</dd>
+                <dt>CAEM</dt><dd>@(_detail.CaemCode ?? "—")</dd>
+                <dt>Insolvent</dt><dd>@(_detail.IsInsolvent ? "Yes" : "No")</dd>
+                <dt>Registered (UTC)</dt><dd>@_detail.RegisteredAtUtc.ToString("yyyy-MM-dd HH:mm")</dd>
+            </dl>
+        }
+        else if (_active == "contributions")
+        {
+            <div data-testid="cd-contributions">
+                @if (_contributions?.Count > 0)
+                {
+                    <ul>
+                        @foreach (var c in _contributions)
+                        {
+                            <li>@c</li>
+                        }
+                    </ul>
+                }
+                else
+                {
+                    <p data-testid="cd-contributions-empty">No contributions on file.</p>
+                }
+            </div>
+        }
+        else if (_active == "documents")
+        {
+            <div data-testid="cd-documents">
+                <p data-testid="cd-documents-empty">No issued documents for this contributor.</p>
+            </div>
+        }
+        else if (_active == "audit")
+        {
+            <div data-testid="cd-audit">
+                <p data-testid="cd-audit-empty">Audit history will appear here once the per-resource feed lands.</p>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    /// <summary>Route parameter — Sqid-encoded contributor id (CLAUDE.md RULE 3).</summary>
+    [Parameter]
+    public string Sqid { get; set; } = string.Empty;
+
+    /// <summary>The loaded contributor detail; null while in flight or on error.</summary>
+    private ContributorOutput? _detail;
+
+    /// <summary>Inline error from the initial GET; null on success.</summary>
+    private string? _loadError;
+
+    /// <summary>Active tab discriminator — defaults to Identity.</summary>
+    private string _active = "identity";
+
+    /// <summary>True while an export download request is in flight (disables the button).</summary>
+    private bool _exporting;
+
+    /// <summary>True for one render after a successful export so the operator sees confirmation.</summary>
+    private bool _exported;
+
+    /// <summary>Inline export error code; null when the last export succeeded.</summary>
+    private string? _exportError;
+
+    /// <summary>Cached source-history projection for the contributions tab.</summary>
+    private IReadOnlyList<string>? _contributions;
+
+    /// <summary>Tab catalog rendered in this order.</summary>
+    private static readonly (string Key, string Label)[] Tabs =
+    [
+        ("identity", "Identity"),
+        ("contributions", "Contributions"),
+        ("documents", "Documents"),
+        ("audit", "Audit History"),
+    ];
+
+    /// <inheritdoc />
+    protected override async Task OnParametersSetAsync()
+    {
+        _loadError = null;
+        _detail = null;
+        _active = "identity";
+        _exported = false;
+        _exportError = null;
+
+        var r = await Api.GetContributorAsync(Sqid).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _loadError = r.ErrorCode;
+            return;
+        }
+        _detail = r.Value;
+    }
+
+    /// <summary>Switches the active tab; lazy-loads tab content as needed.</summary>
+    /// <param name="key">Tab discriminator to activate.</param>
+    private async Task SelectTab(string key)
+    {
+        if (_active == key) return;
+        _active = key;
+        _exported = false;
+        _exportError = null;
+
+        if (key == "contributions" && _contributions is null)
+        {
+            var rows = await Api.GetContributorSourceHistoryAsync(Sqid).ConfigureAwait(false);
+            _contributions = rows.IsSuccess
+                ? rows.Value.Items
+                    .Select(r => $"{r.ChangedAtUtc:yyyy-MM-dd}: {r.NewSourceSystem}")
+                    .ToList()
+                : Array.Empty<string>();
+        }
+    }
+
+    /// <summary>
+    /// Triggers a per-tab export via the iter-125 export pipeline. Routes
+    /// the call to the right registry endpoint based on the active tab —
+    /// the contributors and source-history endpoints already accept the
+    /// <c>format=xlsx</c> query parameter (R0610).
+    /// </summary>
+    private async Task ExportActiveTabAsync()
+    {
+        _exporting = true;
+        _exported = false;
+        _exportError = null;
+        try
+        {
+            var r = await Api.DownloadContributorTabExportAsync(Sqid, _active).ConfigureAwait(false);
+            if (r.IsFailure)
+            {
+                _exportError = r.ErrorCode;
+                return;
+            }
+            _exported = true;
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+}

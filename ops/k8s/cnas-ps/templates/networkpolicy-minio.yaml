@@ -1,0 +1,51 @@
+{{/*
+=============================================================================
+NetworkPolicy — MinIO ingress.
+=============================================================================
+The object storage tier accepts connections from:
+  * API pods on the api port (9000 by default).
+  * Same-component peers on the api port — distributed-mode MinIO members
+    speak S3 to each other for erasure coding rebalance.
+
+A bucket-init Job (if added in a follow-up batch) would be labelled with
+component=minio-init so it falls under the same allow-from rule without a
+new policy.
+
+Console (port 9001) is deliberately NOT exposed by this NetworkPolicy —
+operators must port-forward to reach it. The earlier TOR clause says the
+console must NOT be ingress-exposed, and not opening it via NetworkPolicy
+is the belt-and-braces enforcement.
+=============================================================================
+*/}}
+{{- if and .Values.networkPolicies.enabled .Values.minio.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cnas-ps.minioName" . }}-policy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "minio") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "minio") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # API pods.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.minio.apiPort }}
+    # Other MinIO members (distributed erasure-coding cluster).
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "minio") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.minio.apiPort }}
+{{- end }}

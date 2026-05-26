@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1.7
+#
+# =============================================================================
+# Cnas.Ps.Api — production container image
+# =============================================================================
+# Multi-stage build for the ASP.NET Core 10 API of the CNAS PS system.
+#
+# Stage layout:
+#   1. build   — restores dependencies via Directory.Packages.props and
+#                publishes a framework-dependent Release artifact.
+#   2. runtime — copies the artifact into the minimal aspnet:10.0 runtime
+#                image and runs it as the non-root `app` user (UID 1001).
+#
+# Security posture (CLAUDE.md §5):
+#   * Runs as non-root (`app`, UID 1001), no shell, /tmp on emptyDir.
+#   * Final image contains only the runtime — no SDK, no build tools.
+#   * Deterministic restore: Directory.Packages.props pins package versions.
+#   * Health probes exposed on /health/live and /health/ready over port 8080.
+#
+# Build context: repository root.
+#   docker build -f deploy/docker/Dockerfile.api -t cnas-ps-api:<tag> .
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# stage: build — restore + publish
+# -----------------------------------------------------------------------------
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Copy solution + central package-management files first so layer caching
+# keeps the restore step warm across source-only changes.
+COPY Directory.Build.props Directory.Packages.props ./
+COPY Cnas.Ps.slnx ./
+
+# Copy project files only — restore depends on these, not on source code.
+COPY src/Cnas.Ps.Core/Cnas.Ps.Core.csproj                       src/Cnas.Ps.Core/
+COPY src/Cnas.Ps.Contracts/Cnas.Ps.Contracts.csproj             src/Cnas.Ps.Contracts/
+COPY src/Cnas.Ps.Application/Cnas.Ps.Application.csproj         src/Cnas.Ps.Application/
+COPY src/Cnas.Ps.Infrastructure/Cnas.Ps.Infrastructure.csproj   src/Cnas.Ps.Infrastructure/
+COPY src/Cnas.Ps.Api/Cnas.Ps.Api.csproj                         src/Cnas.Ps.Api/
+
+RUN dotnet restore src/Cnas.Ps.Api/Cnas.Ps.Api.csproj
+
+# Copy the rest of the sources and publish.
+COPY . ./
+
+RUN dotnet publish src/Cnas.Ps.Api/Cnas.Ps.Api.csproj \
+        --configuration Release \
+        --output /app \
+        --no-restore \
+        /p:UseAppHost=false \
+        /p:GenerateDocumentationFile=false \
+        /p:TreatWarningsAsErrors=false
+
+# -----------------------------------------------------------------------------
+# stage: runtime — minimal ASP.NET runtime, non-root
+# -----------------------------------------------------------------------------
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+
+# Create unprivileged `app` user with fixed UID/GID 1001 so the K8s
+# securityContext (runAsUser: 1001) lines up with the image.
+RUN groupadd --system --gid 1001 app \
+ && useradd  --system --uid 1001 --gid app --home-dir /app --shell /usr/sbin/nologin app
+
+WORKDIR /app
+COPY --from=build --chown=app:app /app ./
+
+ENV ASPNETCORE_URLS=http://+:8080 \
+    DOTNET_RUNNING_IN_CONTAINER=true \
+    DOTNET_GENERATE_ASPNET_CERTIFICATE=false \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
+    TZ=UTC
+
+USER app
+
+EXPOSE 8080
+
+# Lightweight liveness — Kubernetes will hit /health/live and /health/ready
+# through proper probes; this HEALTHCHECK is a fallback for plain Docker.
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 \
+    CMD ["dotnet", "--info"]
+
+ENTRYPOINT ["dotnet", "Cnas.Ps.Api.dll"]

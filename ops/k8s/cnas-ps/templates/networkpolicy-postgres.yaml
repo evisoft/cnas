@@ -1,0 +1,48 @@
+{{/*
+=============================================================================
+NetworkPolicy — Postgres ingress.
+=============================================================================
+The data tier MUST only accept connections from:
+  * API pods on port 5432 (the application).
+  * Other Postgres pods on ports 5432 + 8008 (Patroni replication +
+    REST API peer chatter).
+
+Egress is intentionally NOT restricted here — Patroni occasionally needs
+to talk to the Kubernetes API server (PATRONI_KUBERNETES_USE_ENDPOINTS),
+and locking the egress down precisely is a separate hardening pass.
+=============================================================================
+*/}}
+{{- if and .Values.networkPolicies.enabled .Values.postgres.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cnas-ps.postgresName" . }}-policy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # API pods on 5432.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Patroni peers on 5432 (replication) and 8008 (Patroni REST API).
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 8008
+{{- end }}

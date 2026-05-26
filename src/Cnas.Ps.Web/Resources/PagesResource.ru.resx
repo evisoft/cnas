@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Russian translations for the citizen-portal pages. -->
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+
+  <data name="App.Title"><value>ИС Социальной Защиты</value></data>
+
+  <data name="Nav.Dashboard"><value>Панель</value></data>
+  <data name="Nav.Applications"><value>Мои заявления</value></data>
+  <data name="Nav.Profile"><value>Профиль</value></data>
+  <data name="Nav.Logout"><value>Выйти</value></data>
+
+  <data name="Index.Greeting"><value>Добро пожаловать на портал электронных услуг CNAS.</value></data>
+  <data name="Index.LoginButton"><value>Войти через MPass</value></data>
+
+  <data name="Dashboard.Greeting"><value>Здравствуйте, {0}!</value></data>
+  <data name="Dashboard.KpiTotal"><value>Всего заявлений</value></data>
+  <data name="Dashboard.KpiUnderExam"><value>На рассмотрении</value></data>
+  <data name="Dashboard.KpiApproved"><value>Одобрено</value></data>
+  <data name="Dashboard.RecentList"><value>Недавние заявления</value></data>
+
+  <data name="Applications.NewButton"><value>Новое заявление</value></data>
+  <data name="Applications.Reference"><value>Номер</value></data>
+  <data name="Applications.Status"><value>Статус</value></data>
+  <data name="Applications.SubmittedAt"><value>Подано</value></data>
+  <data name="Applications.PayloadHeading"><value>Содержимое</value></data>
+  <data name="Applications.WithdrawButton"><value>Отозвать заявление</value></data>
+
+  <data name="New.SelectService"><value>Выберите услугу</value></data>
+  <data name="New.SubmitButton"><value>Подать заявление</value></data>
+  <data name="New.Required"><value>Обязательно</value></data>
+
+  <data name="Common.Loading"><value>Загрузка…</value></data>
+  <data name="Common.Error"><value>Произошла ошибка. Пожалуйста, попробуйте позже.</value></data>
+  <data name="Common.None"><value>Нет данных.</value></data>
+
+  <!-- Inbox (UC22) — citizen notification list. -->
+  <data name="Inbox.Title" xml:space="preserve"><value>Мои уведомления</value></data>
+  <data name="Inbox.Loading" xml:space="preserve"><value>Загрузка…</value></data>
+  <data name="Inbox.Empty" xml:space="preserve"><value>У вас нет новых уведомлений.</value></data>
+  <data name="Inbox.Anonymous" xml:space="preserve"><value>Войдите, чтобы увидеть уведомления.</value></data>
+
+  <!-- R0332 / CF 12.02 — electronic-archive tabbed UI (/archive). -->
+  <data name="Archive.Title" xml:space="preserve"><value>Электронный архив</value></data>
+  <data name="Archive.Loading" xml:space="preserve"><value>Загрузка архива…</value></data>
+  <data name="Archive.Anonymous" xml:space="preserve"><value>Войдите как сотрудник НКСС, чтобы открыть архив.</value></data>
+  <data name="Archive.Empty" xml:space="preserve"><value>В этой вкладке нет записей.</value></data>
+  <data name="Archive.SearchPlaceholder" xml:space="preserve"><value>Поиск по коду / IDNO / IDNP…</value></data>
+  <data name="Archive.SearchButton" xml:space="preserve"><value>Найти</value></data>
+  <data name="Archive.ChipActive" xml:space="preserve"><value>Активные</value></data>
+  <data name="Archive.ChipArchived" xml:space="preserve"><value>Архивированы</value></data>
+  <data name="Archive.ChipLastUpdated" xml:space="preserve"><value>Обновлено</value></data>
+  <data name="Archive.TabContributors" xml:space="preserve"><value>Плательщики</value></data>
+  <data name="Archive.TabInsuredPersons" xml:space="preserve"><value>Застрахованные лица</value></data>
+  <data name="Archive.TabDecisions" xml:space="preserve"><value>Решения</value></data>
+  <data name="Archive.TabDossiers" xml:space="preserve"><value>Дела</value></data>
+  <data name="Archive.TabDocuments" xml:space="preserve"><value>Документы</value></data>
+</root>

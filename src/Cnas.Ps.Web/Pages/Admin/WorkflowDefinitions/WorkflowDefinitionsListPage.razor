@@ -1,0 +1,125 @@
+@page "/admin/workflow-definitions"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "CnasAdmin")]
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+
+@*
+    R0121 / CF 16.02 — MVP admin list page for the visual designer.
+
+    Layout mirrors the existing /applications list page (table + filter inputs
+    + empty-state) so operators see familiar geometry. Authorisation is
+    enforced server-side (the underlying GET /api/workflows is gated by the
+    cnas-admin policy); the client surfaces a 401/403 as an inline error
+    rather than crashing.
+
+    Localisation: English-only hard-coded copy per the iteration-91 scope
+    (operators inside CNAS-IT use English; localised resx keys land in a
+    follow-up).
+*@
+
+<PageTitle>Workflow definitions (R0121)</PageTitle>
+
+<header class="page-header">
+    <h1>Workflow definitions</h1>
+    <p class="hint">
+        Iteration-91 MVP visual designer — read-only graph rendering with raw-body editing.
+        Interactive drag &amp; drop modelling is a deliberate next-iteration scope.
+    </p>
+</header>
+
+<section class="filters" aria-label="filters">
+    <label>
+        <span>Filter by code</span>
+        <input type="text" data-testid="wf-filter-text"
+               @bind="_codeFilter" @bind:after="ReloadAsync" />
+    </label>
+</section>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="wf-error">
+        <strong>Error</strong> <code>@_error</code>
+    </div>
+}
+else if (_items is null)
+{
+    <p data-testid="wf-loading">Loading...</p>
+}
+else if (_items.Count == 0)
+{
+    <p data-testid="wf-empty-state">No workflow definitions to display.</p>
+}
+else
+{
+    <table class="wf-table" data-testid="wf-table">
+        <thead>
+            <tr>
+                <th>Code</th>
+                <th>Version</th>
+                <th>Current</th>
+                <th>Created (UTC)</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in _items)
+            {
+                <tr data-testid="wf-row">
+                    <td>@item.Code</td>
+                    <td>@item.Version</td>
+                    <td>@(item.IsCurrent ? "Yes" : "No")</td>
+                    <td>@item.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)</td>
+                    <td>
+                        <button type="button" class="link" data-testid="wf-open"
+                                @onclick="() => OpenEditor(item.Code)">
+                            View / Edit
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    /// <summary>Current loaded list (null while the initial load is in flight).</summary>
+    private IReadOnlyList<WorkflowDefinitionListItem>? _items;
+
+    /// <summary>Free-text filter on the workflow code; empty disables the filter.</summary>
+    private string _codeFilter = string.Empty;
+
+    /// <summary>Inline error code shown in the alert when the list call fails.</summary>
+    private string? _error;
+
+    /// <inheritdoc />
+    protected override Task OnInitializedAsync() => ReloadAsync();
+
+    /// <summary>Refetches the list with the current filter applied.</summary>
+    private async Task ReloadAsync()
+    {
+        _error = null;
+        var r = await Api.ListWorkflowDefinitionsAsync(
+            string.IsNullOrWhiteSpace(_codeFilter) ? null : _codeFilter)
+            .ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _error = r.ErrorCode;
+            _items = null;
+            return;
+        }
+        _items = r.Value;
+    }
+
+    /// <summary>
+    /// Navigates to the edit page for the supplied workflow code.
+    /// The route segment is the code itself (NOT a Sqid — see the controller
+    /// documented exception on <c>WorkflowDefinition.Code</c>).
+    /// </summary>
+    /// <param name="code">Stable workflow code.</param>
+    private void OpenEditor(string code)
+    {
+        Navigation.NavigateTo($"/admin/workflow-definitions/{Uri.EscapeDataString(code)}");
+    }
+}

@@ -1,0 +1,59 @@
+# =============================================================================
+# Chart manifest for cnas-ps (TOR R0038: Kubernetes deployment artefacts).
+# =============================================================================
+# This chart bundles the FULL CNAS „Protecția Socială" runtime: the ASP.NET
+# Core 10 API Deployment + HorizontalPodAutoscaler, a Patroni-managed Postgres
+# StatefulSet, a MinIO StatefulSet (or single Deployment in dev), the Ingress
+# with TLS, and the NetworkPolicies enforcing the data-tier perimeter.
+#
+# IMPORTANT — no external chart dependencies. Some Moldovan public-sector
+# procurement envelopes prohibit pulling charts from third-party registries
+# (bitnami, community charts). Every resource here is inlined, even when a
+# canonical upstream chart exists.
+#
+# Versioning rules (CLAUDE.md ratchet pattern):
+#   * `version` bumps on ANY chart change (templates or values schema).
+#   * `appVersion` tracks the upstream CNAS PS application release tag.
+#   * `kubeVersion` is the minimum supported control-plane version — bump only
+#     when a template starts using a newer apiVersion.
+# =============================================================================
+apiVersion: v2
+name: cnas-ps
+description: |
+  CNAS „Protecția Socială" — Kubernetes deployment artefacts (API, Postgres,
+  MinIO, Ingress, NetworkPolicies) mandated by TOR R0038. Inlined; no external
+  chart dependencies.
+type: application
+
+# Chart version — bumped on every change to templates / values schema.
+version: 0.1.0
+
+# App version — tracks the upstream CNAS PS application release.
+appVersion: "1.0.0"
+
+# Minimum supported control-plane version. autoscaling/v2 + networking.k8s.io/v1
+# + policy/v1 are all GA from 1.25 onwards; we pin 1.27 to match the in-house
+# MCloud baseline.
+kubeVersion: ">=1.27.0-0"
+
+home: https://github.com/evisoft/cnas
+sources:
+  - https://github.com/evisoft/cnas
+maintainers:
+  - name: CNAS Engineering
+    email: ops@cnas.gov.md
+
+keywords:
+  - cnas
+  - protectia-sociala
+  - dotnet
+  - aspnetcore
+  - postgres
+  - patroni
+  - minio
+  - moldova
+  - government
+
+annotations:
+  category: Application
+  licenses: Proprietary

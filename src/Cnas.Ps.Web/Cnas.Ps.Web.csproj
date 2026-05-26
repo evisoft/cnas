@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+
+  <PropertyGroup>
+    <AssemblyName>Cnas.Ps.Web</AssemblyName>
+    <RootNamespace>Cnas.Ps.Web</RootNamespace>
+    <Description>
+      Blazor WebAssembly Standalone front-end for SI "Protecția Socială".
+      Browser-only — communicates with the Cnas.Ps.Api host strictly over HTTP/REST.
+      Uses the BlazorCN component library; conforms to WCAG 2.1 AA and the
+      Modelul Unitar de Design (HG 677/2025). Localized in ro/en/ru.
+    </Description>
+    <ServiceWorkerAssetsManifest>service-worker-assets.js</ServiceWorkerAssetsManifest>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <BlazorWebAssemblyLoadAllGlobalizationData>true</BlazorWebAssemblyLoadAllGlobalizationData>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.Authorization" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Localization" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cnas.Ps.Core\Cnas.Ps.Core.csproj" />
+    <ProjectReference Include="..\Cnas.Ps.Contracts\Cnas.Ps.Contracts.csproj" />
+    <!-- BlazorCN consumed via local project reference for now; will be NuGet once published. -->
+    <ProjectReference Include="..\..\..\blazorcn\src\BlazorCN\BlazorCN.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Localization resources live under Resources/. The build system embeds .resx files
+      and generates strongly-typed accessors at runtime via IStringLocalizer.
+    -->
+    <EmbeddedResource Update="Resources\**\*.resx">
+      <Generator></Generator>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

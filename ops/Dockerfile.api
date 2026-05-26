@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1.7
+
+# -----------------------------------------------------------------------------
+# Multi-stage Dockerfile for Cnas.Ps.Api — ASP.NET Core 10 on Alpine for MCloud.
+# Hardened per CLAUDE.md §5 (SEC 003 — minimum privileges):
+#   * runs as non-root user `cnas`
+#   * no shell tools in the final image
+#   * deterministic restore via Directory.Packages.props
+# -----------------------------------------------------------------------------
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
+WORKDIR /src
+
+# Copy solution + package management files first so restore caches well.
+COPY Directory.Build.props Directory.Packages.props ./
+COPY Cnas.Ps.slnx ./
+COPY src/Cnas.Ps.Core/Cnas.Ps.Core.csproj             src/Cnas.Ps.Core/
+COPY src/Cnas.Ps.Application/Cnas.Ps.Application.csproj   src/Cnas.Ps.Application/
+COPY src/Cnas.Ps.Infrastructure/Cnas.Ps.Infrastructure.csproj src/Cnas.Ps.Infrastructure/
+COPY src/Cnas.Ps.Api/Cnas.Ps.Api.csproj               src/Cnas.Ps.Api/
+
+RUN dotnet restore src/Cnas.Ps.Api/Cnas.Ps.Api.csproj
+
+# Copy sources and publish.
+COPY . ./
+RUN dotnet publish src/Cnas.Ps.Api/Cnas.Ps.Api.csproj \
+        --configuration Release \
+        --output /app/publish \
+        --no-restore \
+        -p:PublishTrimmed=false \
+        -p:GenerateDocumentationFile=false \
+        -p:TreatWarningsAsErrors=false
+
+# -----------------------------------------------------------------------------
+# Runtime image
+# -----------------------------------------------------------------------------
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS runtime
+
+# Locale + timezone for Moldova (UTC stored; presentation in EET/EEST).
+RUN apk add --no-cache tzdata icu-data-full \
+    && cp /usr/share/zoneinfo/Europe/Chisinau /etc/localtime \
+    && echo "Europe/Chisinau" > /etc/timezone
+
+ENV ASPNETCORE_URLS=http://+:8080 \
+    DOTNET_GENERATE_ASPNET_CERTIFICATE=false \
+    DOTNET_RUNNING_IN_CONTAINER=true \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
+    TZ=Europe/Chisinau
+
+# Non-root user (SEC 003).
+RUN addgroup -S cnas && adduser -S -G cnas -h /app -s /sbin/nologin cnas
+WORKDIR /app
+COPY --from=build --chown=cnas:cnas /app/publish ./
+
+USER cnas
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 \
+    CMD wget -qO- http://127.0.0.1:8080/health || exit 1
+
+ENTRYPOINT ["dotnet", "Cnas.Ps.Api.dll"]

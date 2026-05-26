@@ -1,0 +1,125 @@
+{{/*
+=============================================================================
+NetworkPolicy — API pod ingress + egress.
+=============================================================================
+Re-opens legitimate flows that the default-deny would otherwise block.
+
+Ingress (who may reach the API):
+  * The cluster's Ingress controller — selected by the namespace +
+    pod label combo in values.networkPolicies.ingressControllerSelector.
+    Default targets nginx-ingress in the ingress-nginx namespace.
+  * Same-namespace observability (Prometheus, OTel collector) hitting
+    /metrics. We allow same-pod-component=api ingress on port 8080 so
+    the kubelet probe is also permitted (kubelets connect from the
+    node-local IP, which Kubernetes labels do not cover, so empty
+    podSelector + namespaceSelector matching the release namespace is
+    the standard workaround).
+
+Egress (where the API may go):
+  * Postgres rw service — port 5432 (TCP).
+  * MinIO API — port 9000 (TCP).
+  * DNS — UDP/TCP 53 to the configured kube-dns ClusterIP CIDR.
+  * OTLP collector — if collector CIDRs are configured.
+  * MGov suite — egress to the CIDR range that the MCloud private VRF
+    covers. We do NOT allow blanket 0.0.0.0/0 egress; that would let a
+    compromised pod exfiltrate to the public internet.
+=============================================================================
+*/}}
+{{- if .Values.networkPolicies.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cnas-ps.apiName" . }}-policy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow the Ingress controller in.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicies.ingressControllerNamespace }}
+          {{- with .Values.networkPolicies.ingressControllerSelector }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Allow Prometheus / OTel collector scrapes from the release ns.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Postgres (in-chart) on 5432.
+    {{- if .Values.postgres.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    # MinIO (in-chart) on the configured api port.
+    {{- if .Values.minio.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "minio") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.minio.apiPort }}
+    {{- end }}
+    # DNS — UDP and TCP 53.
+    {{- with .Values.networkPolicies.dnsCidrs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    # OTLP collector — only when explicitly configured.
+    {{- with .Values.networkPolicies.otlpCollectorCidrs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+    {{- end }}
+    # MGov egress — restricted to the CIDR range of the MCloud private VRF.
+    {{- with .Values.networkPolicies.mgovEgressCidrs }}
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        # HTTPS is the only protocol the MGov suite uses (REST + SOAP both
+        # on TLS). 443 is the only port that needs to be permitted.
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}

@@ -1,0 +1,98 @@
+@using Cnas.Ps.Contracts
+@inject IClassifierLookup Lookup
+
+@*
+    R0403 / CF 17.08 — multi-select classifier picker (companion to
+    ClassifierPicker.razor). Renders one checkbox per active row from the
+    injected IClassifierLookup and emits OnValuesChanged with the updated set
+    every time the user toggles a checkbox. Empty-state mirrors the single-
+    picker so consumer pages can share branchless markup.
+*@
+
+@if (_rows.Count == 0)
+{
+    <span class="classifier-empty" data-testid="classifier-empty">—</span>
+}
+else
+{
+    <ul class="classifier-multi" data-testid="classifier-multi">
+        @foreach (var row in _rows)
+        {
+            var isChecked = _selected.Contains(row.Code);
+            <li>
+                <label>
+                    <input type="checkbox"
+                           data-testid="classifier-checkbox"
+                           data-code="@row.Code"
+                           disabled="@Disabled"
+                           checked="@isChecked"
+                           @onchange="@(e => OnToggleAsync(row.Code, (bool)(e.Value ?? false)))" />
+                    <span>@row.Code — @row.LabelRo</span>
+                </label>
+            </li>
+        }
+    </ul>
+}
+
+@code {
+    /// <summary>Classifier scheme code to load.</summary>
+    [Parameter, EditorRequired] public string SchemeCode { get; set; } = string.Empty;
+
+    /// <summary>Currently-selected codes; two-way bound via <see cref="OnValuesChanged"/>.</summary>
+    [Parameter] public IReadOnlySet<string> Values { get; set; } = new HashSet<string>();
+
+    /// <summary>Callback invoked with the updated selected-set every toggle.</summary>
+    [Parameter] public EventCallback<IReadOnlySet<string>> OnValuesChanged { get; set; }
+
+    /// <summary>When <c>true</c>, every checkbox is rendered in the disabled state.</summary>
+    [Parameter] public bool Disabled { get; set; }
+
+    /// <summary>When <c>true</c>, the picker is required for form submission (consumer-driven validation).</summary>
+    [Parameter] public bool Required { get; set; }
+
+    /// <summary>The active rows fetched from the lookup; never <c>null</c>.</summary>
+    private IReadOnlyList<ClassifierRow> _rows = Array.Empty<ClassifierRow>();
+
+    /// <summary>Mutable copy of the bound selection set.</summary>
+    private HashSet<string> _selected = new(StringComparer.Ordinal);
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        _selected = new HashSet<string>(Values, StringComparer.Ordinal);
+
+        if (string.IsNullOrWhiteSpace(SchemeCode))
+        {
+            _rows = Array.Empty<ClassifierRow>();
+            return;
+        }
+
+        _rows = await Lookup.GetActiveAsync(SchemeCode).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Toggles the supplied code in the selected-set and emits the updated set
+    /// via <see cref="OnValuesChanged"/> for the consumer to persist.
+    /// </summary>
+    /// <param name="code">The classifier code being toggled.</param>
+    /// <param name="isChecked">Whether the checkbox is now checked.</param>
+    /// <returns>Async task.</returns>
+    private async Task OnToggleAsync(string code, bool isChecked)
+    {
+        if (isChecked)
+        {
+            _selected.Add(code);
+        }
+        else
+        {
+            _selected.Remove(code);
+        }
+
+        if (OnValuesChanged.HasDelegate)
+        {
+            // Defensive copy so the consumer cannot mutate our internal set.
+            var snapshot = new HashSet<string>(_selected, StringComparer.Ordinal);
+            await OnValuesChanged.InvokeAsync(snapshot).ConfigureAwait(false);
+        }
+    }
+}

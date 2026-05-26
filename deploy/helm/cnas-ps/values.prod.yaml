@@ -1,0 +1,82 @@
+# =============================================================================
+# values.prod.yaml — production overrides
+# =============================================================================
+# Intent: full HA, autoscaling, monitoring and tight network isolation.
+# Uses an EXTERNAL managed Postgres — connection string comes from the
+# Secret named in `api.envFromSecret`. NO in-cluster Postgres.
+# =============================================================================
+
+api:
+  image:
+    tag: ""
+  # When autoscaling is enabled, replicaCount is the floor only — the HPA
+  # block below sets minReplicas: 3.
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  env:
+    ASPNETCORE_ENVIRONMENT: Production
+    Logging__LogLevel__Default: Information
+    Logging__LogLevel__Microsoft: Warning
+    Logging__LogLevel__System: Warning
+  envFromSecret: cnas-ps-prod
+
+web:
+  image:
+    tag: ""
+  replicaCount: 3
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "32m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: cnas.gov.md
+      paths:
+        - { path: /api, pathType: Prefix, service: api }
+        - { path: /,    pathType: Prefix, service: web }
+  tls:
+    - secretName: cnas-prod-tls
+      hosts:
+        - cnas.gov.md
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    interval: 30s
+    scrapeTimeout: 10s
+    path: /metrics
+
+networkPolicy:
+  enabled: true
+  # Add Operaton / cron runner / etc. namespaces here.
+  allowFromNamespaces: []
+
+# Production typically pulls secrets from a managed store via
+# external-secrets.io. Enable here and configure the SecretStore separately.
+secrets:
+  externalOperator: false
+  externalSecretName: cnas-ps-prod
+  secretStoreRef:
+    name: ""
+    kind: ClusterSecretStore
+  refreshInterval: 1h
+  data: {}
+
+# In-cluster Postgres MUST NOT be used in production.
+# postgresql: { enabled: false }

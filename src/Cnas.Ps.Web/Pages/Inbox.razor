@@ -1,0 +1,160 @@
+@page "/inbox"
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@using Cnas.Ps.Web.Components
+@inject CnasApiClient Api
+@inject IStringLocalizer<PagesResource> L
+@inject ClientNotificationPoller Poller
+
+@*
+    Citizen notification inbox (UC22). The page is gated on the cascaded
+    UserSession — anonymous callers see a sign-in prompt instead of being
+    silently bounced by a 401 from /api/notifications/mine. Authenticated
+    callers see the loading marker until the API roundtrip completes, then
+    either the list, the empty-state, or an error alert. Mirrors the
+    Dashboard / Applications/New patterns for state-machine + data-testid
+    hooks so the bUnit tests can target stable selectors.
+
+    All user-facing copy is resolved via IStringLocalizer<PagesResource>;
+    keys live under the `Inbox.*` namespace in PagesResource.resx (ro/en/ru),
+    with `Common.Error` reused from the shared bucket so the error alert
+    matches the heading used by Dashboard / Applications/*.
+*@
+
+<PageTitle>@L["Inbox.Title"]</PageTitle>
+
+<h1 data-testid="heading">@L["Inbox.Title"]</h1>
+
+@if (!_session.IsAuthenticated)
+{
+    <p data-testid="anonymous-message">@L["Inbox.Anonymous"]</p>
+}
+else if (_state == LoadState.Loading)
+{
+    <p data-testid="loading">@L["Inbox.Loading"]</p>
+}
+else if (_state == LoadState.Error)
+{
+    <div class="alert alert-error" role="alert" data-testid="error-alert">
+        <strong>@L["Common.Error"]</strong>
+        <code>@_errorCode</code>
+        @if (!string.IsNullOrWhiteSpace(_errorDetail))
+        {
+            <p data-testid="error-detail">@_errorDetail</p>
+        }
+    </div>
+}
+else if (_result is null || _result.Items.Count == 0)
+{
+    <p data-testid="empty-inbox">@L["Inbox.Empty"]</p>
+}
+else
+{
+    <ul class="inbox" data-testid="inbox-list">
+        @foreach (var n in _result.Items)
+        {
+            <li class="notification @(n.ReadAtUtc.HasValue ? "read" : "unread")" data-testid="notification-item">
+                @* R0172 / TOR CF 22.05 — render the subject as a clickable
+                   deep-link when the server-resolved DeepLinkUrl is set,
+                   otherwise fall back to plain text. The server is the
+                   single source of truth for the route (Sqid encoded server-
+                   side per CLAUDE.md RULE 3), so the markup branch is purely
+                   a presentation choice. *@
+                @if (!string.IsNullOrWhiteSpace(n.DeepLinkUrl))
+                {
+                    <header>
+                        <a href="@n.DeepLinkUrl" data-testid="notification-deep-link">@n.Subject</a>
+                    </header>
+                }
+                else
+                {
+                    <header>@n.Subject</header>
+                }
+                <p>@n.Body</p>
+                <span class="meta">@n.Channel · @n.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm")</span>
+            </li>
+        }
+    </ul>
+}
+
+@code {
+    /// <summary>
+    /// Authenticated session cascaded by <c>MainLayout</c>. When the cascading
+    /// value is missing (e.g. in unit tests that don't wrap the component in a
+    /// layout) we treat the caller as anonymous and skip the API call.
+    /// </summary>
+    [CascadingParameter(Name = "Session")]
+    public UserSession Session { get; set; } = UserSession.Anonymous;
+
+    /// <summary>Local non-nullable copy used inside the markup.</summary>
+    private UserSession _session = UserSession.Anonymous;
+
+    /// <summary>The page's loading state machine (Loading -&gt; Loaded | Error).</summary>
+    private LoadState _state = LoadState.Loading;
+
+    /// <summary>Paged inbox payload; non-null only when <see cref="_state"/> is <see cref="LoadState.Loaded"/>.</summary>
+    private PagedResult<NotificationOutput>? _result;
+
+    /// <summary>Stable error code surfaced by the API client when the request fails.</summary>
+    private string? _errorCode;
+
+    /// <summary>Server-provided error detail message, displayed inside the error-alert when present.</summary>
+    private string? _errorDetail;
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        _session = Session;
+
+        // Anonymous callers must not hit the API — the endpoint requires auth
+        // and would always 401. Render the anonymous prompt instead.
+        if (!_session.IsAuthenticated)
+        {
+            _state = LoadState.Loaded;
+            return;
+        }
+
+        var r = await Api.GetMyInboxAsync(page: 1, pageSize: 20).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _errorCode = r.ErrorCode;
+            _errorDetail = r.ErrorMessage;
+            _state = LoadState.Error;
+            return;
+        }
+
+        _result = r.Value;
+        _state = LoadState.Loaded;
+    }
+
+    /// <summary>
+    /// R0170 / TOR CF 22.02 — degrade-mode polling hook. Fired once on first
+    /// render to refresh the toast queue without a long-running HostedService
+    /// (which would fight the bUnit harness). The call is fire-and-forget;
+    /// transport failures are swallowed inside the poller.
+    /// </summary>
+    /// <param name="firstRender">True on the first render of the page.</param>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && _session.IsAuthenticated)
+        {
+            await Poller.PollAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Three-position state machine driving which markup branch renders:
+    /// the loading placeholder, the error alert, or the loaded list/empty-state.
+    /// </summary>
+    private enum LoadState
+    {
+        /// <summary>The API call is in-flight; render the loading marker.</summary>
+        Loading,
+
+        /// <summary>The API call succeeded; render the list or the empty-state.</summary>
+        Loaded,
+
+        /// <summary>The API call failed; render the error alert.</summary>
+        Error,
+    }
+}

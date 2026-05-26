@@ -1,0 +1,323 @@
+@using Cnas.Ps.Web.Models
+@using System.Globalization
+
+@*
+    R0121 / CF 16.02 — read-only SVG renderer for a parsed
+    WorkflowGraphModel. The render is pure: no JavaScript interop, no click
+    handlers, no drag. Interactive editing is explicitly out of scope for the
+    iteration-91 MVP visual designer.
+
+    Layout: a deterministic level-based assignment. The leftmost level
+    contains the "entry" nodes (those with no incoming edges — typically the
+    Start node); each subsequent level holds nodes whose deepest predecessor
+    sits one level shallower. Within a level we order alphabetically by code
+    so the layout is reproducible across renders. Start/End nodes are
+    rendered as circles per BPMN convention; everything else as rectangles.
+
+    Implementation note: Razor reserves the `<text>` tag for raw-text
+    emission, so SVG text elements are produced via a MarkupString helper
+    rather than written inline.
+*@
+
+@if (Model is null || Model.Nodes.Count == 0)
+{
+    <div class="wf-svg-empty" data-testid="empty-placeholder" role="img" aria-label="Empty workflow graph">
+        @((MarkupString)BuildEmptyGridSvg())
+    </div>
+}
+else
+{
+    var positions = ComputeLayout(Model);
+    var bounds = ComputeBounds(positions);
+
+    <div class="wf-svg" role="img" aria-label="Workflow graph">
+        @((MarkupString)BuildGraphSvg(Model, positions, bounds))
+    </div>
+}
+
+@code {
+    /// <summary>The graph to render. Null or empty produces the placeholder grid.</summary>
+    [Parameter] public WorkflowGraphModel? Model { get; set; }
+
+    // ----------------------------------------------------------------------
+    // Layout constants — kept private so consumers can't accidentally drift
+    // them out of sync with the rendered geometry.
+    // ----------------------------------------------------------------------
+
+    /// <summary>Width of a rectangular node in pixels.</summary>
+    private const int NodeWidth = 140;
+
+    /// <summary>Height of a rectangular node in pixels.</summary>
+    private const int NodeHeight = 50;
+
+    /// <summary>Half of <see cref="NodeWidth"/> — pre-computed for anchor maths.</summary>
+    private const int NodeHalfWidth = NodeWidth / 2;
+
+    /// <summary>Half of <see cref="NodeHeight"/> — pre-computed for anchor maths.</summary>
+    private const int NodeHalfHeight = NodeHeight / 2;
+
+    /// <summary>Radius of the start/end circle nodes.</summary>
+    private const int NodeRadius = 28;
+
+    /// <summary>Horizontal spacing between adjacent levels.</summary>
+    private const int LevelGap = 200;
+
+    /// <summary>Vertical spacing between siblings within a level.</summary>
+    private const int RowGap = 100;
+
+    /// <summary>Default placeholder grid width.</summary>
+    private const int PlaceholderWidth = 600;
+
+    /// <summary>Default placeholder grid height.</summary>
+    private const int PlaceholderHeight = 300;
+
+    /// <summary>Anchor position assigned to a node by <see cref="ComputeLayout"/>.</summary>
+    /// <param name="X">Centre X coordinate in pixels.</param>
+    /// <param name="Y">Centre Y coordinate in pixels.</param>
+    private readonly record struct Pos(int X, int Y);
+
+    /// <summary>Outer dimensions of the rendered SVG once layout is settled.</summary>
+    /// <param name="W">SVG width in pixels.</param>
+    /// <param name="H">SVG height in pixels.</param>
+    private readonly record struct Bounds(int W, int H);
+
+    /// <summary>
+    /// Builds the placeholder grid SVG markup as a raw string so it can be
+    /// emitted via <see cref="MarkupString"/>. The grid is decorative — no
+    /// interactive elements — and announced via the parent div's aria-label.
+    /// </summary>
+    /// <returns>SVG markup string.</returns>
+    private static string BuildEmptyGridSvg()
+    {
+        var sb = new System.Text.StringBuilder(512);
+        sb.Append("<svg width=\"").Append(PlaceholderWidth).Append("\" height=\"")
+          .Append(PlaceholderHeight).Append("\" viewBox=\"0 0 ").Append(PlaceholderWidth)
+          .Append(' ').Append(PlaceholderHeight)
+          .Append("\" xmlns=\"http://www.w3.org/2000/svg\">");
+        for (var x = 0; x < PlaceholderWidth; x += 40)
+        {
+            sb.Append("<line x1=\"").Append(x).Append("\" y1=\"0\" x2=\"")
+              .Append(x).Append("\" y2=\"").Append(PlaceholderHeight)
+              .Append("\" stroke=\"#eee\" stroke-width=\"1\" />");
+        }
+        for (var y = 0; y < PlaceholderHeight; y += 40)
+        {
+            sb.Append("<line x1=\"0\" y1=\"").Append(y).Append("\" x2=\"")
+              .Append(PlaceholderWidth).Append("\" y2=\"").Append(y)
+              .Append("\" stroke=\"#eee\" stroke-width=\"1\" />");
+        }
+        sb.Append("<text x=\"").Append(PlaceholderWidth / 2).Append("\" y=\"")
+          .Append(PlaceholderHeight / 2)
+          .Append("\" text-anchor=\"middle\" fill=\"#999\" font-family=\"sans-serif\" font-size=\"14\">")
+          .Append("No workflow nodes to render</text>");
+        sb.Append("</svg>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Builds the rendered graph SVG markup as a raw string. Emits edges
+    /// before nodes so node shapes paint over edge endpoints, and uses
+    /// <c>data-testid</c> hooks (<c>edge-line</c>, <c>node-shape</c>,
+    /// <c>node-shape-start</c>, <c>node-shape-end</c>) the bUnit tests rely
+    /// on to assert structural correctness.
+    /// </summary>
+    /// <param name="model">Parsed workflow graph.</param>
+    /// <param name="positions">Per-node coordinates from <see cref="ComputeLayout"/>.</param>
+    /// <param name="bounds">Outer dimensions from <see cref="ComputeBounds"/>.</param>
+    /// <returns>SVG markup string.</returns>
+    private static string BuildGraphSvg(
+        WorkflowGraphModel model,
+        Dictionary<string, Pos> positions,
+        Bounds bounds)
+    {
+        var sb = new System.Text.StringBuilder(4096);
+        sb.Append("<svg width=\"").Append(bounds.W).Append("\" height=\"").Append(bounds.H)
+          .Append("\" viewBox=\"0 0 ").Append(bounds.W).Append(' ').Append(bounds.H)
+          .Append("\" xmlns=\"http://www.w3.org/2000/svg\">");
+
+        // Reusable arrowhead marker.
+        sb.Append("<defs>");
+        sb.Append("<marker id=\"wf-arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" ")
+          .Append("markerWidth=\"8\" markerHeight=\"8\" orient=\"auto-start-reverse\">");
+        sb.Append("<path d=\"M 0 0 L 10 5 L 0 10 Z\" fill=\"#444\" />");
+        sb.Append("</marker></defs>");
+
+        // Edges.
+        foreach (var edge in model.Edges)
+        {
+            if (!positions.TryGetValue(edge.From, out var src)) { continue; }
+            if (!positions.TryGetValue(edge.To, out var dst)) { continue; }
+            var x1 = src.X + NodeHalfWidth;
+            var y1 = src.Y;
+            var x2 = dst.X - NodeHalfWidth;
+            var y2 = dst.Y;
+            sb.Append("<line data-testid=\"edge-line\" x1=\"").Append(x1).Append("\" y1=\"")
+              .Append(y1).Append("\" x2=\"").Append(x2).Append("\" y2=\"").Append(y2)
+              .Append("\" stroke=\"#444\" stroke-width=\"2\" marker-end=\"url(#wf-arrow)\" />");
+
+            if (!string.IsNullOrWhiteSpace(edge.Label))
+            {
+                var mx = (x1 + x2) / 2;
+                var my = (y1 + y2) / 2 - 6;
+                sb.Append("<text x=\"").Append(mx).Append("\" y=\"").Append(my)
+                  .Append("\" text-anchor=\"middle\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#555\">")
+                  .Append(HtmlEscape(edge.Label!))
+                  .Append("</text>");
+            }
+        }
+
+        // Nodes.
+        foreach (var node in model.Nodes)
+        {
+            if (!positions.TryGetValue(node.Code, out var pos)) { continue; }
+            var label = string.IsNullOrWhiteSpace(node.Label) ? node.Code : node.Label!;
+            var isStart = string.Equals(node.Kind, "Start", StringComparison.Ordinal);
+            var isEnd = string.Equals(node.Kind, "End", StringComparison.Ordinal);
+
+            if (isStart)
+            {
+                sb.Append("<circle data-testid=\"node-shape-start\" cx=\"").Append(pos.X)
+                  .Append("\" cy=\"").Append(pos.Y).Append("\" r=\"").Append(NodeRadius)
+                  .Append("\" fill=\"#e8f5e9\" stroke=\"#2e7d32\" stroke-width=\"2\" />");
+            }
+            else if (isEnd)
+            {
+                sb.Append("<circle data-testid=\"node-shape-end\" cx=\"").Append(pos.X)
+                  .Append("\" cy=\"").Append(pos.Y).Append("\" r=\"").Append(NodeRadius)
+                  .Append("\" fill=\"#ffebee\" stroke=\"#c62828\" stroke-width=\"3\" />");
+            }
+            else
+            {
+                var rx = pos.X - NodeHalfWidth;
+                var ry = pos.Y - NodeHalfHeight;
+                sb.Append("<rect data-testid=\"node-shape\" x=\"").Append(rx)
+                  .Append("\" y=\"").Append(ry).Append("\" width=\"").Append(NodeWidth)
+                  .Append("\" height=\"").Append(NodeHeight).Append("\" rx=\"6\" ry=\"6\"")
+                  .Append(" fill=\"#eef\" stroke=\"#3949ab\" stroke-width=\"2\" />");
+            }
+
+            sb.Append("<text x=\"").Append(pos.X).Append("\" y=\"").Append(pos.Y + 4)
+              .Append("\" text-anchor=\"middle\" font-family=\"sans-serif\" font-size=\"12\" fill=\"#222\">")
+              .Append(HtmlEscape(label))
+              .Append("</text>");
+        }
+
+        sb.Append("</svg>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Escapes the five XML/HTML special characters so user-controlled node
+    /// labels can't break out of the SVG markup. Faster than
+    /// <c>System.Web.HttpUtility.HtmlEncode</c> for the tiny strings we emit
+    /// and avoids dragging the System.Web assembly into the WASM payload.
+    /// </summary>
+    /// <param name="raw">Untrusted label string.</param>
+    /// <returns>Escaped string safe to embed in attribute or element content.</returns>
+    private static string HtmlEscape(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) { return raw; }
+        return raw
+            .Replace("&", "&amp;", StringComparison.Ordinal)
+            .Replace("<", "&lt;", StringComparison.Ordinal)
+            .Replace(">", "&gt;", StringComparison.Ordinal)
+            .Replace("\"", "&quot;", StringComparison.Ordinal)
+            .Replace("'", "&#39;", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Assigns every node a <see cref="Pos"/> using a deterministic
+    /// level-based algorithm: each node's level = longest path length from
+    /// any source (node with no incoming edges); within a level, nodes are
+    /// ordered by <see cref="WorkflowNodeModel.Code"/> alphabetical
+    /// ascending.
+    /// </summary>
+    /// <param name="model">The parsed graph.</param>
+    /// <returns>Code-keyed dictionary of node positions.</returns>
+    private static Dictionary<string, Pos> ComputeLayout(WorkflowGraphModel model)
+    {
+        var nodes = model.Nodes;
+        var edges = model.Edges;
+
+        var incoming = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var n in nodes)
+        {
+            incoming[n.Code] = new List<string>();
+        }
+        foreach (var e in edges)
+        {
+            if (incoming.TryGetValue(e.To, out var list) && incoming.ContainsKey(e.From))
+            {
+                list.Add(e.From);
+            }
+        }
+
+        var level = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var n in nodes) { level[n.Code] = 0; }
+
+        for (var pass = 0; pass < nodes.Count + 1; pass++)
+        {
+            var moved = false;
+            foreach (var n in nodes)
+            {
+                if (!incoming.TryGetValue(n.Code, out var preds) || preds.Count == 0)
+                {
+                    continue;
+                }
+                var maxPred = 0;
+                foreach (var p in preds)
+                {
+                    if (level.TryGetValue(p, out var lvl) && lvl + 1 > maxPred)
+                    {
+                        maxPred = lvl + 1;
+                    }
+                }
+                if (level[n.Code] < maxPred)
+                {
+                    level[n.Code] = maxPred;
+                    moved = true;
+                }
+            }
+            if (!moved) { break; }
+        }
+
+        var byLevel = nodes
+            .GroupBy(n => level[n.Code])
+            .OrderBy(g => g.Key)
+            .Select(g => (Level: g.Key, Nodes: g.OrderBy(n => n.Code, StringComparer.Ordinal).ToList()))
+            .ToList();
+
+        var positions = new Dictionary<string, Pos>(StringComparer.Ordinal);
+        foreach (var grp in byLevel)
+        {
+            for (var i = 0; i < grp.Nodes.Count; i++)
+            {
+                var x = grp.Level * LevelGap + 80;
+                var y = i * RowGap + 60;
+                positions[grp.Nodes[i].Code] = new Pos(x, y);
+            }
+        }
+        return positions;
+    }
+
+    /// <summary>
+    /// Computes the SVG outer dimensions to fit every laid-out node with a
+    /// reasonable margin.
+    /// </summary>
+    /// <param name="positions">Output of <see cref="ComputeLayout"/>.</param>
+    /// <returns>The width/height bounds to apply to the &lt;svg&gt; viewport.</returns>
+    private static Bounds ComputeBounds(Dictionary<string, Pos> positions)
+    {
+        if (positions.Count == 0)
+        {
+            return new Bounds(PlaceholderWidth, PlaceholderHeight);
+        }
+        var maxX = positions.Values.Max(p => p.X) + NodeWidth;
+        var maxY = positions.Values.Max(p => p.Y) + NodeHeight;
+        return new Bounds(Math.Max(maxX, 400), Math.Max(maxY, 200));
+    }
+
+    // Suppress unused-using warning under Razor's strict mode (the CultureInfo
+    // include is reserved for a future labels-formatted-as-numbers extension).
+    private static readonly CultureInfo _invariantReserved = CultureInfo.InvariantCulture;
+}

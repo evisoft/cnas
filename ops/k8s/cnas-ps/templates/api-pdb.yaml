@@ -1,0 +1,29 @@
+{{/*
+=============================================================================
+PodDisruptionBudget — API
+=============================================================================
+Protects the API from voluntary disruptions (node drains, cluster upgrades).
+With replicaCount: 3 and minAvailable: 2, kubectl drain can evict at most
+one pod at a time — the next eviction blocks until the replacement is ready.
+
+PDBs DO NOT cover involuntary disruptions (node crashes, kernel OOM). For
+those the HPA + readiness probes are the recovery mechanism.
+
+Disable in dev with `pdb.enabled: false` to allow `kubectl drain` to
+evacuate small clusters without manually deleting the API.
+=============================================================================
+*/}}
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cnas-ps.apiName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+{{- end }}

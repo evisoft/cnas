@@ -1,0 +1,219 @@
+@page "/applications/new"
+@using System.Text.Json
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    Form-driven application submission. Step 1: pick a service passport. Step 2: render
+    the dynamic form from the passport's FormSchemaJson (JSON-Schema-lite). Step 3:
+    POST /api/applications with the assembled payload.
+
+    Supported field kinds: string, integer, number, boolean, date. Required markers
+    are derived from the schema's "required" array.
+*@
+
+<PageTitle>@L["Applications.NewButton"] · @L["App.Title"]</PageTitle>
+
+<h1>@L["Applications.NewButton"]</h1>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="error-alert">
+        <strong>@L["Common.Error"]</strong>
+        <code>@_error</code>
+        @if (!string.IsNullOrWhiteSpace(_errorDetail))
+        {
+            <p data-testid="error-detail">@_errorDetail</p>
+        }
+    </div>
+}
+
+@if (_passports is null)
+{
+    <p>@L["Common.Loading"]</p>
+}
+else
+{
+    <label class="picker">
+        <span>@L["New.SelectService"]</span>
+        <select data-testid="passport-select" @bind="_selectedPassportId" @bind:after="OnPassportSelectedAsync">
+            <option value="">--</option>
+            @foreach (var p in _passports)
+            {
+                <option value="@p.Id">@p.NameRo</option>
+            }
+        </select>
+    </label>
+}
+
+@if (_fields is not null)
+{
+    <form @onsubmit="OnSubmitAsync" @onsubmit:preventDefault data-testid="dynamic-form">
+        @foreach (var f in _fields)
+        {
+            <div class="field">
+                <label>
+                    <span>
+                        @f.Name @if (f.Required)
+                        {
+                            <em class="required" data-testid="@($"req-{f.Name}")">*</em>
+                        }
+                    </span>
+                    @switch (f.Kind)
+                    {
+                        case "boolean":
+                            <input type="checkbox" data-testid="@($"input-{f.Name}")" @bind="f.BoolValue" />
+                            break;
+                        case "integer":
+                            <input type="number" step="1" data-testid="@($"input-{f.Name}")" @bind="f.StringValue" />
+                            break;
+                        case "number":
+                            <input type="number" step="any" data-testid="@($"input-{f.Name}")" @bind="f.StringValue" />
+                            break;
+                        case "date":
+                            <input type="date" data-testid="@($"input-{f.Name}")" value="@f.StringValue" @onchange="e => f.StringValue = e.Value?.ToString()" />
+                            break;
+                        default:
+                            <input type="text" data-testid="@($"input-{f.Name}")" @bind="f.StringValue" />
+                            break;
+                    }
+                </label>
+            </div>
+        }
+
+        <button type="submit" class="primary" data-testid="submit-btn" disabled="@_submitting">
+            @L["New.SubmitButton"]
+        </button>
+    </form>
+}
+
+@code {
+    private IReadOnlyList<ServicePassportListItem>? _passports;
+    private string _selectedPassportId = string.Empty;
+    private List<DynamicField>? _fields;
+    private bool _submitting;
+    private string? _error;
+    private string? _errorDetail;
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        var r = await Api.ListServicePassportsAsync().ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _error = r.ErrorCode;
+            _errorDetail = r.ErrorMessage;
+            return;
+        }
+        _passports = r.Value;
+    }
+
+    /// <summary>Loads the chosen passport's schema and builds the dynamic-field list.</summary>
+    private async Task OnPassportSelectedAsync()
+    {
+        _fields = null;
+        if (string.IsNullOrWhiteSpace(_selectedPassportId)) return;
+
+        var r = await Api.GetServicePassportAsync(_selectedPassportId).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _error = r.ErrorCode;
+            _errorDetail = r.ErrorMessage;
+            return;
+        }
+        _fields = BuildFields(r.Value.FormSchemaJson);
+    }
+
+    /// <summary>
+    /// Parses a minimal JSON-Schema-style document into a flat list of fields.
+    /// Falls back to an empty list when the schema is malformed.
+    /// </summary>
+    /// <param name="schemaJson">The raw schema JSON.</param>
+    /// <returns>The flattened field list ready for binding.</returns>
+    private static List<DynamicField> BuildFields(string schemaJson)
+    {
+        var list = new List<DynamicField>();
+        if (string.IsNullOrWhiteSpace(schemaJson)) return list;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(schemaJson);
+            var root = doc.RootElement;
+            HashSet<string> required = new(StringComparer.Ordinal);
+            if (root.TryGetProperty("required", out var reqEl) && reqEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var r in reqEl.EnumerateArray())
+                {
+                    if (r.ValueKind == JsonValueKind.String) required.Add(r.GetString()!);
+                }
+            }
+
+            if (root.TryGetProperty("properties", out var props) && props.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var prop in props.EnumerateObject())
+                {
+                    var kind = "string";
+                    if (prop.Value.TryGetProperty("type", out var typeEl) && typeEl.ValueKind == JsonValueKind.String)
+                    {
+                        kind = typeEl.GetString() ?? "string";
+                    }
+                    list.Add(new DynamicField
+                    {
+                        Name = prop.Name,
+                        Kind = kind,
+                        Required = required.Contains(prop.Name),
+                    });
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Malformed schema — surface as empty form; users see Submit but no fields.
+        }
+
+        return list;
+    }
+
+    /// <summary>Assembles the payload JSON and POSTs the submission.</summary>
+    private async Task OnSubmitAsync()
+    {
+        if (_fields is null) return;
+        _submitting = true;
+        _error = null;
+        _errorDetail = null;
+
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var f in _fields)
+        {
+            payload[f.Name] = f.Kind == "boolean" ? f.BoolValue : f.StringValue;
+        }
+        var payloadJson = JsonSerializer.Serialize(payload);
+
+        var input = new SubmitApplicationInput(
+            ServicePassportId: _selectedPassportId,
+            FormPayloadJson: payloadJson,
+            AttachmentDocumentIds: Array.Empty<string>());
+
+        var r = await Api.SubmitApplicationAsync(input).ConfigureAwait(false);
+        _submitting = false;
+        if (r.IsFailure)
+        {
+            _error = r.ErrorCode;
+            _errorDetail = r.ErrorMessage;
+            return;
+        }
+
+        Navigation.NavigateTo($"/applications/{r.Value}");
+    }
+
+    /// <summary>Internal binding model for a single dynamic form field.</summary>
+    private sealed class DynamicField
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Kind { get; set; } = "string";
+        public bool Required { get; set; }
+        public string? StringValue { get; set; }
+        public bool BoolValue { get; set; }
+    }
+}

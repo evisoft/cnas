@@ -1,0 +1,270 @@
+@page "/admin/service-passports/{Code}"
+@using Microsoft.AspNetCore.Authorization
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@attribute [Authorize(Policy = "CnasAdmin")]
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+
+@*
+    R0640 / TOR CF 15.01-15.04 — admin service-passport editor.
+
+    Loads the addressed passport via GET /api/service-passports/{code},
+    surfaces the editable fields (NameRo, NameRu, NameEn, IsEnabled,
+    IsProactive, DescriptionRo, MaxProcessingDays, WorkflowCode), and
+    PUTs the updated payload back through the existing controller.
+    Code is rendered read-only — renaming the stable logical code is a
+    breaking change handled by a separate retire/create workflow.
+
+    Cross-links surface the business-rule editor (R0141) and the config
+    matrix preview (R0143) for the same passport — both are server-side
+    gated by the same cnas-admin policy so the navigation never lands on
+    an unauthorised page.
+*@
+
+<PageTitle>Edit service passport @Code (R0640)</PageTitle>
+
+<header class="page-header">
+    <a href="/admin/service-passports" class="back-link">&laquo; Back to list</a>
+    <h1>Service passport: <code>@Code</code></h1>
+</header>
+
+@if (_loadError is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="sp-load-error">
+        <strong>Failed to load</strong> <code>@_loadError</code>
+    </div>
+}
+else if (_form is null)
+{
+    <p data-testid="sp-loading">Loading...</p>
+}
+else
+{
+    <section class="sp-cross-links" aria-label="related editors">
+        <a href="@($"/admin/business-rules/{Uri.EscapeDataString(Code)}")"
+           data-testid="sp-link-business-rules">
+            Business rules &rarr;
+        </a>
+        <a href="@($"/api/service-passports/{Uri.EscapeDataString(Code)}/config-matrix")"
+           data-testid="sp-link-config-matrix"
+           target="_blank" rel="noopener">
+            Configuration matrix (raw) &rarr;
+        </a>
+    </section>
+
+    <form class="sp-editor-form" @onsubmit="SaveAsync" @onsubmit:preventDefault data-testid="sp-form">
+
+        <label>
+            <span>Code</span>
+            <input type="text" data-testid="sp-input-code"
+                   value="@_form.Code" readonly />
+        </label>
+
+        <label>
+            <span>Name (RO)</span>
+            <input type="text" data-testid="sp-input-name-ro"
+                   @bind="_form.NameRo" />
+        </label>
+
+        <label>
+            <span>Name (RU)</span>
+            <input type="text" data-testid="sp-input-name-ru"
+                   @bind="_form.NameRu" />
+        </label>
+
+        <label>
+            <span>Name (EN)</span>
+            <input type="text" data-testid="sp-input-name-en"
+                   @bind="_form.NameEn" />
+        </label>
+
+        <label>
+            <span>Description (RO)</span>
+            <textarea rows="3" data-testid="sp-input-description-ro"
+                      @bind="_form.DescriptionRo"></textarea>
+        </label>
+
+        <label>
+            <span>Workflow code</span>
+            <input type="text" data-testid="sp-input-workflow-code"
+                   @bind="_form.WorkflowCode" />
+        </label>
+
+        <label>
+            <span>Max processing days</span>
+            <input type="number" min="1" max="365" data-testid="sp-input-max-days"
+                   @bind="_form.MaxProcessingDays" />
+        </label>
+
+        <label class="checkbox">
+            <input type="checkbox" data-testid="sp-input-enabled"
+                   @bind="_form.IsEnabled" />
+            <span>Enabled (active in citizen catalogue)</span>
+        </label>
+
+        <label class="checkbox">
+            <input type="checkbox" data-testid="sp-input-proactive"
+                   @bind="_form.IsProactive" />
+            <span>Proactive service (auto-submission)</span>
+        </label>
+
+        <div class="actions">
+            <button type="submit" class="primary" data-testid="sp-save"
+                    disabled="@_saving">
+                Save
+            </button>
+            @if (_saveError is not null)
+            {
+                <span class="alert-inline" data-testid="sp-save-error">
+                    <strong>Save failed</strong> <code>@_saveError</code>
+                </span>
+            }
+            else if (_saved)
+            {
+                <span class="success-inline" data-testid="sp-save-ok">Saved.</span>
+            }
+        </div>
+    </form>
+}
+
+@code {
+    /// <summary>Route parameter — stable logical passport code.</summary>
+    [Parameter]
+    public string Code { get; set; } = string.Empty;
+
+    /// <summary>Editable form state populated from the GET response.</summary>
+    private PassportFormModel? _form;
+
+    /// <summary>Inline error from the initial GET; null on success.</summary>
+    private string? _loadError;
+
+    /// <summary>Inline error from the most recent save; null when none.</summary>
+    private string? _saveError;
+
+    /// <summary>True for one render after a successful save so the operator sees confirmation.</summary>
+    private bool _saved;
+
+    /// <summary>Disables Save while an inflight request is in progress to prevent double-clicks.</summary>
+    private bool _saving;
+
+    /// <inheritdoc />
+    protected override async Task OnParametersSetAsync()
+    {
+        _loadError = null;
+        _form = null;
+        _saved = false;
+        _saveError = null;
+
+        var r = await Api.GetServicePassportByCodeAsync(Code).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _loadError = r.ErrorCode;
+            return;
+        }
+        var detail = r.Value;
+        _form = new PassportFormModel
+        {
+            Id = detail.Id,
+            Code = detail.Code,
+            NameRo = detail.NameRo,
+            NameEn = detail.NameEn,
+            NameRu = detail.NameRu,
+            DescriptionRo = detail.DescriptionRo,
+            FormSchemaJson = detail.FormSchemaJson,
+            WorkflowCode = detail.WorkflowCode,
+            MaxProcessingDays = detail.MaxProcessingDays,
+            IsEnabled = detail.IsEnabled,
+            IsProactive = detail.IsProactive,
+            DecisionRulesJson = detail.DecisionRulesJson,
+        };
+    }
+
+    /// <summary>
+    /// PUTs the current form state back through the existing
+    /// <c>PUT /api/service-passports/{code}</c> endpoint. The route segment
+    /// stays the original code so a misconfigured rename cannot point one
+    /// route at a different passport — the controller pins the route Sqid
+    /// over any body Id field.
+    /// </summary>
+    private async Task SaveAsync()
+    {
+        if (_form is null) return;
+
+        _saving = true;
+        _saveError = null;
+        _saved = false;
+        try
+        {
+            var input = new ServicePassportInput(
+                Id: _form.Id,
+                Code: _form.Code,
+                NameRo: _form.NameRo,
+                NameEn: _form.NameEn,
+                NameRu: _form.NameRu,
+                DescriptionRo: _form.DescriptionRo,
+                FormSchemaJson: _form.FormSchemaJson,
+                WorkflowCode: _form.WorkflowCode,
+                MaxProcessingDays: _form.MaxProcessingDays,
+                IsEnabled: _form.IsEnabled,
+                IsProactive: _form.IsProactive,
+                DecisionRulesJson: _form.DecisionRulesJson);
+
+            var r = await Api.UpdateServicePassportAsync(Code, input).ConfigureAwait(false);
+            if (r.IsFailure)
+            {
+                _saveError = r.ErrorCode;
+                return;
+            }
+            _saved = true;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    /// <summary>
+    /// Form-state container for the editor inputs. Mirrors
+    /// <see cref="ServicePassportDetailOutput"/> but with mutable
+    /// properties so the @bind directives can round-trip through it.
+    /// </summary>
+    private sealed class PassportFormModel
+    {
+        /// <summary>Sqid id of the passport revision (round-tripped verbatim on save).</summary>
+        public string Id { get; set; } = string.Empty;
+
+        /// <summary>Stable logical passport code (read-only in the editor).</summary>
+        public string Code { get; set; } = string.Empty;
+
+        /// <summary>Romanian display name.</summary>
+        public string NameRo { get; set; } = string.Empty;
+
+        /// <summary>Optional English display name.</summary>
+        public string? NameEn { get; set; }
+
+        /// <summary>Optional Russian display name.</summary>
+        public string? NameRu { get; set; }
+
+        /// <summary>Romanian description shown in the citizen catalogue.</summary>
+        public string DescriptionRo { get; set; } = string.Empty;
+
+        /// <summary>JSON schema for the citizen-facing form (round-tripped verbatim).</summary>
+        public string FormSchemaJson { get; set; } = "{}";
+
+        /// <summary>Workflow code linking this passport to its workflow definition.</summary>
+        public string WorkflowCode { get; set; } = string.Empty;
+
+        /// <summary>Maximum number of working days the citizen may wait for a decision.</summary>
+        public int MaxProcessingDays { get; set; }
+
+        /// <summary>Whether the passport is exposed in the citizen catalogue.</summary>
+        public bool IsEnabled { get; set; }
+
+        /// <summary>Whether the passport is a proactive (auto-submitted) service.</summary>
+        public bool IsProactive { get; set; }
+
+        /// <summary>JSON decision rules consumed by the engine (round-tripped verbatim).</summary>
+        public string DecisionRulesJson { get; set; } = "{}";
+    }
+}

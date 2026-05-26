@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Default (Romanian) resource bundle for citizen-portal pages.
+  Keys follow Section.SubKey convention; consumed via IStringLocalizer<Pages>.
+-->
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+
+  <data name="App.Title"><value>SI Protecția Socială</value></data>
+
+  <data name="Nav.Dashboard"><value>Tablou de bord</value></data>
+  <data name="Nav.Applications"><value>Cererile mele</value></data>
+  <data name="Nav.Profile"><value>Profil</value></data>
+  <data name="Nav.Logout"><value>Ieșire</value></data>
+
+  <data name="Index.Greeting"><value>Bine ați venit la portalul de servicii electronice CNAS.</value></data>
+  <data name="Index.LoginButton"><value>Autentificare cu MPass</value></data>
+
+  <data name="Dashboard.Greeting"><value>Bună ziua, {0}!</value></data>
+  <data name="Dashboard.KpiTotal"><value>Total cereri</value></data>
+  <data name="Dashboard.KpiUnderExam"><value>În examinare</value></data>
+  <data name="Dashboard.KpiApproved"><value>Aprobate</value></data>
+  <data name="Dashboard.RecentList"><value>Cereri recente</value></data>
+
+  <data name="Applications.NewButton"><value>Cerere nouă</value></data>
+  <data name="Applications.Reference"><value>Referință</value></data>
+  <data name="Applications.Status"><value>Statut</value></data>
+  <data name="Applications.SubmittedAt"><value>Depusă la</value></data>
+  <data name="Applications.PayloadHeading"><value>Conținut</value></data>
+  <data name="Applications.WithdrawButton"><value>Retrage cererea</value></data>
+
+  <data name="New.SelectService"><value>Selectați serviciul</value></data>
+  <data name="New.SubmitButton"><value>Depune cererea</value></data>
+  <data name="New.Required"><value>Obligatoriu</value></data>
+
+  <data name="Common.Loading"><value>Se încarcă…</value></data>
+  <data name="Common.Error"><value>A apărut o eroare. Vă rugăm să încercați mai târziu.</value></data>
+  <data name="Common.None"><value>Nu există date.</value></data>
+
+  <!--
+    Inbox (UC22) — citizen notification list. `Common.Error` is reused for the
+    error-alert heading; the four `Inbox.*` keys are page-specific.
+  -->
+  <data name="Inbox.Title" xml:space="preserve"><value>Notificările mele</value></data>
+  <data name="Inbox.Loading" xml:space="preserve"><value>Se încarcă…</value></data>
+  <data name="Inbox.Empty" xml:space="preserve"><value>Nu aveți notificări noi.</value></data>
+  <data name="Inbox.Anonymous" xml:space="preserve"><value>Autentificați-vă pentru a vedea notificările.</value></data>
+
+  <!--
+    R0332 / CF 12.02 — electronic-archive tabbed UI (/archive). Each tab is a
+    register surfaced by an existing controller; the page also resolves a
+    one-shot summary header from /api/archive/summary.
+  -->
+  <data name="Archive.Title" xml:space="preserve"><value>Arhivă electronică</value></data>
+  <data name="Archive.Loading" xml:space="preserve"><value>Se încarcă arhiva…</value></data>
+  <data name="Archive.Anonymous" xml:space="preserve"><value>Autentificați-vă ca utilizator CNAS pentru a accesa arhiva.</value></data>
+  <data name="Archive.Empty" xml:space="preserve"><value>Nu există înregistrări în această filă.</value></data>
+  <data name="Archive.SearchPlaceholder" xml:space="preserve"><value>Căutare după cod / IDNO / IDNP…</value></data>
+  <data name="Archive.SearchButton" xml:space="preserve"><value>Caută</value></data>
+  <data name="Archive.ChipActive" xml:space="preserve"><value>Active</value></data>
+  <data name="Archive.ChipArchived" xml:space="preserve"><value>Arhivate</value></data>
+  <data name="Archive.ChipLastUpdated" xml:space="preserve"><value>Actualizat</value></data>
+  <data name="Archive.TabContributors" xml:space="preserve"><value>Plătitori</value></data>
+  <data name="Archive.TabInsuredPersons" xml:space="preserve"><value>Persoane asigurate</value></data>
+  <data name="Archive.TabDecisions" xml:space="preserve"><value>Decizii</value></data>
+  <data name="Archive.TabDossiers" xml:space="preserve"><value>Dosare</value></data>
+  <data name="Archive.TabDocuments" xml:space="preserve"><value>Documente</value></data>
+
+  <!--
+    R0381 / UC05 — supervisor workspace (team queue). Page is gated by the
+    SefulDirectiei policy on the API; the front-end resolves these keys via
+    IStringLocalizer<PagesResource>.
+  -->
+  <data name="Supervisor.Title" xml:space="preserve"><value>Spațiul de lucru al supervizorului</value></data>
+  <data name="Supervisor.Loading" xml:space="preserve"><value>Se încarcă coada echipei…</value></data>
+  <data name="Supervisor.Empty" xml:space="preserve"><value>Echipa nu are sarcini active.</value></data>
+  <data name="Supervisor.Anonymous" xml:space="preserve"><value>Autentificați-vă ca supervizor pentru a vizualiza coada.</value></data>
+  <data name="Supervisor.ColTitle" xml:space="preserve"><value>Sarcină</value></data>
+  <data name="Supervisor.ColStatus" xml:space="preserve"><value>Statut</value></data>
+  <data name="Supervisor.ColAssignee" xml:space="preserve"><value>Asignat</value></data>
+  <data name="Supervisor.ColDueAt" xml:space="preserve"><value>Termen</value></data>
+  <data name="Supervisor.ColActions" xml:space="preserve"><value>Acțiuni</value></data>
+  <data name="Supervisor.ReassignButton" xml:space="preserve"><value>Reasignare</value></data>
+
+  <!--
+    R0590 / TOR CF 10.01 — decider's approval workspace (/approvals). All
+    page-specific strings live under the `Approvals.*` namespace; the
+    cross-page `Common.*` keys cover the loading + error chrome.
+  -->
+  <data name="Approvals.Title" xml:space="preserve"><value>Spațiul de lucru pentru aprobare</value></data>
+  <data name="Approvals.Loading" xml:space="preserve"><value>Se încarcă deciziile…</value></data>
+  <data name="Approvals.Empty" xml:space="preserve"><value>Nu există decizii în așteptare.</value></data>
+  <data name="Approvals.Anonymous" xml:space="preserve"><value>Autentificați-vă cu rolul de decident pentru a vizualiza deciziile.</value></data>
+  <data name="Approvals.SummaryPending" xml:space="preserve"><value>În așteptare</value></data>
+  <data name="Approvals.SummaryOverdue" xml:space="preserve"><value>Cu termen depășit</value></data>
+  <data name="Approvals.SummaryToday" xml:space="preserve"><value>Sosite astăzi</value></data>
+  <data name="Approvals.ColDossier" xml:space="preserve"><value>Dosar</value></data>
+  <data name="Approvals.ColDecision" xml:space="preserve"><value>Decizie</value></data>
+  <data name="Approvals.ColExaminer" xml:space="preserve"><value>Examinator</value></data>
+  <data name="Approvals.ColEmittedAt" xml:space="preserve"><value>Transmis la</value></data>
+  <data name="Approvals.ColSlaDeadline" xml:space="preserve"><value>Termen SLA</value></data>
+  <data name="Approvals.ColActions" xml:space="preserve"><value>Acțiuni</value></data>
+  <data name="Approvals.ApproveButton" xml:space="preserve"><value>Aprobă</value></data>
+  <data name="Approvals.RejectButton" xml:space="preserve"><value>Respinge</value></data>
+  <data name="Approvals.RejectReasonLabel" xml:space="preserve"><value>Motivul respingerii (3-500 caractere)</value></data>
+  <data name="Approvals.RejectConfirmButton" xml:space="preserve"><value>Confirmă respingerea</value></data>
+  <data name="Approvals.RejectCancelButton" xml:space="preserve"><value>Anulează</value></data>
+
+  <!--
+    R0361 / UC13 — self-service citizen profile editor (/profile/me). All
+    page-specific strings live under the `MyProfile.*` namespace; the
+    cross-page `Common.*` keys cover the loading + error chrome.
+  -->
+  <data name="MyProfile.Title" xml:space="preserve"><value>Profilul meu</value></data>
+  <data name="MyProfile.Loading" xml:space="preserve"><value>Se încarcă profilul…</value></data>
+  <data name="MyProfile.Anonymous" xml:space="preserve"><value>Autentificați-vă pentru a vă vedea profilul.</value></data>
+  <data name="MyProfile.DisplayName" xml:space="preserve"><value>Nume afișat</value></data>
+  <data name="MyProfile.Email" xml:space="preserve"><value>E-mail</value></data>
+  <data name="MyProfile.Phone" xml:space="preserve"><value>Telefon</value></data>
+  <data name="MyProfile.Language" xml:space="preserve"><value>Limba preferată</value></data>
+  <data name="MyProfile.NotificationsHeading" xml:space="preserve"><value>Preferințe notificări</value></data>
+  <data name="MyProfile.NotificationsEmail" xml:space="preserve"><value>E-mail</value></data>
+  <data name="MyProfile.NotificationsSms" xml:space="preserve"><value>SMS</value></data>
+  <data name="MyProfile.NotificationsInApp" xml:space="preserve"><value>Notificări în aplicație</value></data>
+  <data name="MyProfile.LayoutHeading" xml:space="preserve"><value>Aspect</value></data>
+  <data name="MyProfile.SaveButton" xml:space="preserve"><value>Salvați</value></data>
+  <data name="MyProfile.SaveSuccess" xml:space="preserve"><value>Profilul a fost actualizat.</value></data>
+</root>

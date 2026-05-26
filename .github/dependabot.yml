@@ -1,0 +1,79 @@
+# Purpose:
+#   Automated dependency update PRs for the CNAS Social Protection Information System.
+#   Covers three ecosystems:
+#     - nuget          (.NET packages declared centrally in Directory.Packages.props)
+#     - github-actions (action versions pinned in .github/workflows/*.yml)
+#     - docker         (base images in deploy/docker/Dockerfile.api + Dockerfile.web)
+#
+# When:
+#   Weekly schedule, Monday 06:00 UTC. UTC is mandated by CLAUDE.md "UTC everywhere".
+#
+# Cardinal rules applied:
+#   - Stable commit message prefix (chore(deps):) so semantic-release / changelog tooling
+#     can classify these PRs without manual triage.
+#   - Open PR cap on the nuget ecosystem so we are not flooded after long maintenance gaps.
+#   - "dependencies" label so PRs can be filtered, auto-assigned, or auto-merged by policy.
+
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # .NET packages -- Directory.Packages.props is the single central pin file.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps):"
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions -- keeps workflow action pins fresh.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps):"
+
+  # ---------------------------------------------------------------------------
+  # Docker base images -- API. Dependabot scans the named Dockerfile in this dir.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "docker"
+    directory: "/deploy/docker/Dockerfile.api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps):"
+
+  # ---------------------------------------------------------------------------
+  # Docker base images -- Web.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "docker"
+    directory: "/deploy/docker/Dockerfile.web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps):"

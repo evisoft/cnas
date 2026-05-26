@@ -1,0 +1,135 @@
+@page "/registers/decisions"
+@using Microsoft.AspNetCore.Authorization
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@attribute [Authorize]
+@inject CnasApiClient Api
+
+@*
+    R1601 + R1604 / TOR Annex 3.9 — read-only browser for the
+    RegistrulDeciziilor projection.
+
+    The page surfaces a filter strip (date range + decision-type code) and a
+    paged table of decision rows. Authorisation is enforced server-side; the
+    page surfaces transport failures as an inline error rather than crashing.
+
+    Per CLAUDE.md RULE 3 every Sqid that flows through the listing rows is
+    already encoded at the API boundary; the page passes the strings straight
+    to deep-link routes without decoding.
+*@
+
+<PageTitle>Registrul deciziilor (R1601)</PageTitle>
+
+<header class="page-header">
+    <h1 data-testid="decisions-register-heading">Registrul deciziilor</h1>
+    <p class="hint">
+        TOR Annex 3.9 — toate deciziile emise de CNAS proiectate din tabelul Documente.
+    </p>
+</header>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="decisions-register-error">
+        <strong>Eroare</strong> <code>@_error</code>
+    </div>
+}
+
+<form class="filters" data-testid="decisions-register-filters" @onsubmit="ReloadAsync" @onsubmit:preventDefault>
+    <label>
+        De la (UTC):
+        <input type="date" data-testid="decisions-filter-from" @bind="_from" />
+    </label>
+    <label>
+        Până la (UTC):
+        <input type="date" data-testid="decisions-filter-to" @bind="_to" />
+    </label>
+    <label>
+        Tip:
+        <input type="text" data-testid="decisions-filter-type" @bind="_type" placeholder="DECIZIE_RECUPERARE_SUME" />
+    </label>
+    <button type="submit" data-testid="decisions-register-search">Caută</button>
+</form>
+
+<section class="exports" data-testid="decisions-register-exports">
+    @* iter-113 export pipeline wire-up is pending — buttons are disabled until the
+       persistence endpoint lands. Keep the buttons in the DOM (with a tooltip + the
+       disabled attribute) so the accessibility tree and keyboard-navigation tests
+       continue to find their target without invoking the no-op handler. *@
+    <button type="button" data-testid="decisions-export-csv" disabled title="Export is not yet available">Export CSV</button>
+    <button type="button" data-testid="decisions-export-xlsx" disabled title="Export is not yet available">Export XLSX</button>
+    <button type="button" data-testid="decisions-export-pdf" disabled title="Export is not yet available">Export PDF</button>
+</section>
+
+@if (_rows is null && _error is null)
+{
+    <p data-testid="decisions-register-loading">Se încarcă...</p>
+}
+else if (_rows is { Items: var items } && items.Count == 0)
+{
+    <p data-testid="decisions-register-empty">Nicio decizie în intervalul selectat.</p>
+}
+else if (_rows is not null)
+{
+    <table class="register-table" data-testid="decisions-register-table">
+        <thead>
+            <tr>
+                <th>Nr. decizie</th>
+                <th>Tip</th>
+                <th>Emisă la (UTC)</th>
+                <th>Sumă (MDL)</th>
+                <th>Stare</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var row in _rows.Items)
+            {
+                <tr data-testid="decisions-register-row">
+                    <td>@row.DecisionNumber</td>
+                    <td>@row.DecisionTypeCode</td>
+                    <td>@row.IssuedAtUtc.ToString("u")</td>
+                    <td>@(row.Amount?.ToString("0.00") ?? "—")</td>
+                    <td>@row.Status</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    /// <summary>Lower-bound issuance filter; null = no lower bound.</summary>
+    private DateTime? _from;
+
+    /// <summary>Upper-bound issuance filter; null = no upper bound.</summary>
+    private DateTime? _to;
+
+    /// <summary>Stable decision-type code filter (free text — backend infers prefix).</summary>
+    private string? _type;
+
+    /// <summary>Cached paged result; null until first load completes.</summary>
+    private PagedResult<DecisionRegisterRowDto>? _rows;
+
+    /// <summary>Last transport-error message, or null on the happy path.</summary>
+    private string? _error;
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Reloads the table using the current filter state.</summary>
+    private async Task ReloadAsync()
+    {
+        _error = null;
+        var result = await Api.ListDecisionsRegisterAsync(_from, _to, _type).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            _error = result.ErrorMessage;
+            return;
+        }
+        _rows = result.Value;
+    }
+
+    // Export pipeline wire-up is pending — the buttons are rendered with the
+    // `disabled` attribute so the no-op click handler is no longer reachable.
+}

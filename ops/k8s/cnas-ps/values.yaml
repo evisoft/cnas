@@ -1,0 +1,503 @@
+# =============================================================================
+# values.yaml — default (schema-documenting) values for the cnas-ps chart.
+# =============================================================================
+# Every key is documented inline so operators can override safely without
+# spelunking the templates. Sensitive values (DB connection strings, MGov
+# bearer tokens, MinIO credentials, field-encryption / hashing secrets, JWT
+# keys) MUST come from a Kubernetes Secret — either inlined here for STAGING
+# only (see `secret.inline`) or via ExternalSecret / Vault Agent / Sealed
+# Secrets in production (see `vault.enabled`).
+#
+# Cluster timezone is assumed to be UTC (CLAUDE.md cross-cutting principle).
+# Refer to README.md for the complete configuration reference and rotation
+# matrix for every secret.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global metadata propagated to every rendered resource.
+# -----------------------------------------------------------------------------
+# `nameOverride` / `fullnameOverride` let multi-tenant clusters host two
+# release names (cnas-ps-prod, cnas-ps-staging) under the same chart without
+# selector collisions. Leave blank in single-tenant clusters.
+nameOverride: ""
+fullnameOverride: ""
+
+# Common labels appended to every resource. Useful for FinOps cost allocation
+# (e.g. {cost-center: "cnas-ps-prod"}) and environment tagging.
+commonLabels: {}
+# Common annotations appended to every resource (Argo CD sync waves, etc.).
+commonAnnotations: {}
+
+# -----------------------------------------------------------------------------
+# Image registry credentials. The CI workflow pushes to ghcr.io under
+# ghcr.io/evisoft/cnas-ps-api:<sha>. ImagePullSecrets only matter for private
+# registries — the dev cluster usually uses an anonymous pull through MCloud's
+# registry mirror.
+# -----------------------------------------------------------------------------
+imagePullSecrets: []
+
+# =============================================================================
+# image — API container image
+# =============================================================================
+# Tag is REQUIRED at install time. We DELIBERATELY do not default to "latest"
+# to enforce immutable references and to avoid the production-rollback hazard
+# where a rolling-update on a mutable tag silently picks up new code.
+image:
+  repository: ghcr.io/evisoft/cnas-ps-api
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# =============================================================================
+# replicaCount — base API replicas (overridden by HPA when enabled)
+# =============================================================================
+# Three replicas keep the API quorate during a single-node drain (1 evicted,
+# 2 still serving). With HPA enabled the HPA owns the live replica count and
+# this is only the seed value for the very first reconcile loop.
+replicaCount: 3
+
+# =============================================================================
+# serviceAccount — dedicated SA for the API pod (least privilege)
+# =============================================================================
+# `create: true` materializes a fresh ServiceAccount + (optional) Role for
+# the API namespace-scoped permissions. The API itself does NOT call the
+# Kubernetes API in normal operation — the SA exists so the auditor can
+# attribute pod activity to a non-default identity.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Extra annotations applied to the API pod template (not the chart resources).
+# Common use: vault.hashicorp.com/* annotations for Vault Agent Injector.
+podAnnotations: {}
+
+# =============================================================================
+# securityContext — pod-level security context (CLAUDE.md §5)
+# =============================================================================
+# All three IDs match the Dockerfile.api USER directive (10001). fsGroup lets
+# the kubelet chown the emptyDir at /tmp so the non-root container can write
+# .NET DataProtection keys there.
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# =============================================================================
+# containerSecurityContext — container-level security context (CLAUDE.md §5)
+# =============================================================================
+# readOnlyRootFilesystem forces every writable path to be an explicit emptyDir
+# mount. ALL capabilities dropped — ASP.NET Kestrel does NOT need NET_BIND
+# because we listen on 8080 (not 80). allowPrivilegeEscalation: false closes
+# the setuid/sudo escape hatch even if a binary on the image has the suid bit.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 10001
+  capabilities:
+    drop:
+      - ALL
+
+# =============================================================================
+# resources — API container resource requests / limits
+# =============================================================================
+# Requests reserve scheduling capacity (drives bin-packing). Limits cap
+# consumption so a runaway pod cannot starve siblings. The ratio (1:4 for both
+# CPU and memory) is healthy — wide limit headroom for spikes while keeping
+# requests realistic so the cluster autoscaler does not over-provision.
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1
+    memory: 1Gi
+
+# Scheduling — pin to specific node pool only when ops attaches taints.
+nodeSelector: {}
+tolerations: []
+# Soft anti-affinity by default: spread replicas across hosts when possible
+# but do not block scheduling on small dev clusters where 3 nodes are not
+# available.
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: api
+          topologyKey: kubernetes.io/hostname
+
+# =============================================================================
+# service — ClusterIP fronting the API pods
+# =============================================================================
+# ClusterIP only — the Ingress is the public entry point. Targets the API
+# container port 8080.
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  annotations: {}
+
+# =============================================================================
+# ingress — single Ingress for /api/* + /health/* with TLS
+# =============================================================================
+# `host` is REQUIRED at install time so the chart does not bake the
+# production hostname into the templates. The Ingress controller (nginx /
+# Traefik) MUST be configured to strip client-supplied X-Forwarded-For and
+# replace it with the controller's own value — otherwise the API's
+# RateLimitingOptions.TrustForwardedHeaders=true setting partitions traffic
+# by an attacker-controlled header.
+ingress:
+  enabled: true
+  className: nginx
+  host: ""
+  # When `tls.certManager` is true the Ingress is annotated for cert-manager
+  # (the ClusterIssuer named in `tls.clusterIssuer` must already exist). When
+  # false the Secret named in `tls.secretName` must be created out-of-band
+  # (kubectl create secret tls ...).
+  tls:
+    enabled: true
+    secretName: cnas-ps-tls
+    certManager: false
+    clusterIssuer: letsencrypt-prod
+  # Annotations forwarded verbatim to the Ingress. Defaults reflect:
+  #   - proxy-body-size: 30 MiB — MinioOptions.MaxFileSizeBytes is 25 MiB,
+  #     +5 MiB of headroom for multipart envelope overhead.
+  #   - proxy-read-timeout: 60s — covers long-running MGov SOAP calls.
+  #   - server-snippet: rate-limiting OFF at the ingress (we rate-limit
+  #     in-app via RateLimitingOptions — having two limiters would double-
+  #     count requests).
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "30m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+
+# =============================================================================
+# hpa — HorizontalPodAutoscaler for the API
+# =============================================================================
+# TOR PSR 003 mandates 2000 concurrent sessions. With ~300 active sessions per
+# pod (Kestrel default thread-pool sizing) the math is 2000 / 300 ≈ 7 pods at
+# peak, plus a 40% safety margin for traffic spikes → maxReplicas: 10. Min 3
+# keeps the deploy quorate even at idle.
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  # behavior tames flapping. Scale-up is aggressive (double pods every 60s)
+  # so the system meets a sudden surge; scale-down is conservative (one pod
+  # every 5 min, never more than 10% at a time) so a transient lull does
+  # not evict still-warm workers.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+
+# =============================================================================
+# pdb — PodDisruptionBudget for the API
+# =============================================================================
+# Set minAvailable so node drains during cluster maintenance cannot reduce
+# the API below the floor. minAvailable: 2 with replicaCount: 3 lets a single
+# node be drained without inducing a brownout.
+pdb:
+  enabled: true
+  minAvailable: 2
+
+# =============================================================================
+# autoscaling — opt-in autoscalers (R2118 / ARH 009)
+# =============================================================================
+# Disabled by default — turn on once the cluster's VPA controller is
+# installed. The recommended rollout is `updateMode: Off` for ≥ 7 days to
+# observe recommendations, then `Auto` once the suggested bands stabilise.
+# The VPA template lives at templates/vpa.yaml.
+autoscaling:
+  vpa:
+    # Toggle the entire VerticalPodAutoscaler CRD.
+    enabled: false
+    # Off | Initial | Auto. Auto evicts pods to apply recommendations.
+    updateMode: "Off"
+    # Floor / ceiling for the recommender. Defaults below match the HPA's
+    # working assumption (one pod handles ~300 sessions at 500m / 1Gi).
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: "4"
+      memory: 4Gi
+
+# =============================================================================
+# config — non-secret API configuration (rendered into a ConfigMap)
+# =============================================================================
+# Every entry below maps 1:1 to an *Options* class in the .NET codebase. The
+# representative subset below shows the env-var encoding (`Cnas:Section:Key`
+# → `Cnas__Section__Key`); the README.md "Configuration reference" lists
+# every option exhaustively. Add new keys here, NEVER hard-code them in the
+# deployment template — the goal is that the configmap is the single source
+# of truth for non-secret runtime knobs.
+config:
+  aspNetCoreEnvironment: Production
+  # ObservabilityOptions (src/Cnas.Ps.Api/Composition/ObservabilityOptions.cs).
+  observability:
+    otlpEndpoint: ""
+    serviceName: cnas-ps-api
+    serviceVersion: "1.0.0"
+    environment: production
+    enableConsoleExporter: false
+  # RateLimitingOptions (Cnas:RateLimiting). Defaults reflect SEC 008 — 5 req/min
+  # for anonymous and 200 req/min for authenticated callers. Adjust per-policy
+  # limits via these keys; the global concurrency ceiling guards against
+  # thread-pool exhaustion irrespective of policy.
+  rateLimiting:
+    enabled: true
+    trustForwardedHeaders: true
+    anonymousPermitLimit: 5
+    anonymousWindowSeconds: 60
+    authenticatedPermitLimit: 200
+    authenticatedWindowSeconds: 60
+    callbackPermitLimit: 60
+    callbackWindowSeconds: 60
+    uploadPermitLimit: 10
+    uploadWindowSeconds: 60
+    globalConcurrencyLimit: 500
+    globalConcurrencyQueueLimit: 1000
+  # MGovResilienceOptions (Cnas:MGov:Resilience). Representative subset — the
+  # same shape repeats for mpay, mconnect, mnotify, mlog, mdocs, mconnect-events,
+  # mcabinet. The README documents the full matrix.
+  mgovResilience:
+    enabled: true
+    msign:
+      maxRetries: 3
+      baseDelayMs: 200
+      perAttemptTimeoutMs: 10000
+      totalPipelineTimeoutMs: 60000
+      failureRatio: 0.5
+      circuitBreakerDurationSeconds: 30
+    # ... and so on for the other clients (mpay, mconnect, mnotify, mlog,
+    # mdocs, mconnect-events, mcabinet). Override via values overlay.
+  # MGov base URLs (non-secret — the bearer tokens / mTLS certs are the
+  # secret half).
+  mgov:
+    mpassIssuer: ""
+    mpassClientId: ""
+    msignBaseUrl: ""
+    mpayBaseUrl: ""
+    mconnectBaseUrl: ""
+    mnotifyBaseUrl: ""
+    mlogBaseUrl: ""
+    mdocsBaseUrl: ""
+    mconnectEventsBaseUrl: ""
+  # MCabinetOptions (Cnas:MCabinet). SystemCode must remain stable for the
+  # lifetime of the integration — changing it orphans every previously-
+  # published card on mcabinet.gov.md.
+  mcabinet:
+    baseUrl: ""
+    systemCode: CNAS-PS
+  # MinIO endpoint (non-secret). Keys live in `secret.minio`.
+  minio:
+    endpoint: "" # auto-populated by templates when minio.enabled=true
+    useSsl: false
+    citizenUploadsBucket: cnas-citizen-uploads
+    generatedDocumentsBucket: cnas-generated
+    maxFileSizeBytes: 26214400 # 25 MiB
+  # Postgres connection string template (no secret material — password is
+  # interpolated by the secret block via $(POSTGRES_PASSWORD)).
+  postgres:
+    host: "" # auto-populated by templates when postgres.enabled=true
+    port: 5432
+    database: cnas
+    username: cnas
+    sslMode: Require
+
+# =============================================================================
+# secret — sensitive API configuration (rendered into a Secret OR ExternalSecret)
+# =============================================================================
+# Two modes:
+#   * `vault.enabled: false` (default for staging) — the chart materializes a
+#     v1.Secret with the values from `secret.inline.*`. NEVER commit real
+#     production secrets here; staging values may be inlined for convenience.
+#   * `vault.enabled: true`  — the chart materializes an ExternalSecret
+#     (external-secrets.io/v1beta1) pointing at the SecretStore named in
+#     `vault.secretStoreRef`. The actual Secret is reconciled by the
+#     operator. The keys in `secret.remoteKeys` map to remote paths in the
+#     backing store (Vault, AWS Secrets Manager, etc.).
+secret:
+  inline:
+    # ConnectionStrings__Postgres — full connection string. Defaults to a
+    # template that the templates will substitute when postgres.enabled=true.
+    connectionStringsPostgres: ""
+    # Cnas:FieldEncryption:Key — base64-encoded 32-byte AES-256 key.
+    # Generate: `openssl rand -base64 32`.
+    fieldEncryptionKey: ""
+    # Cnas:FieldHashing:SaltKey — base64-encoded 32+ byte HMAC-SHA256 key.
+    fieldHashingSaltKey: ""
+    # Minio access / secret keys (8+ chars / 40+ chars per MinIO requirements).
+    minioAccessKey: ""
+    minioSecretKey: ""
+    # HMAC keys for anonymous MGov callback verification.
+    callbackMpaySigningKey: ""
+    callbackMnotifySigningKey: ""
+    callbackMsignSigningKey: ""
+    # mTLS PFX passwords keyed by service name (matches Cnas:MGov:Mtls:
+    # Certificates.<service>.Password binding).
+    mtlsMsignPassword: ""
+    mtlsMpayPassword: ""
+    mtlsMconnectPassword: ""
+    mtlsMnotifyPassword: ""
+    mtlsMlogPassword: ""
+    mtlsMdocsPassword: ""
+    mtlsMconnectEventsPassword: ""
+    mtlsMcabinetPassword: ""
+    # MPass client secret (Cnas:MGov:MPassClientSecret) — OIDC confidential
+    # client; rotate via AGE portal.
+    mpassClientSecret: ""
+
+# =============================================================================
+# vault — External Secrets Operator integration toggle
+# =============================================================================
+# When enabled, the api-secret.yaml template renders an ExternalSecret instead
+# of a v1.Secret. The cluster MUST have the external-secrets.io operator
+# installed and a (Cluster)SecretStore matching `secretStoreRef`.
+vault:
+  enabled: false
+  refreshInterval: 1h
+  secretStoreRef:
+    name: cnas-secret-store
+    kind: ClusterSecretStore
+  # Remote keys mapped to the K8s secret payload. The keys on the LEFT match
+  # the .NET env var paths (Cnas__FieldEncryption__Key, etc.); the values on
+  # the RIGHT are the remote paths in the backing secret store.
+  remoteKeys:
+    Cnas__FieldEncryption__Key: cnas/ps/prod/field-encryption-key
+    Cnas__FieldHashing__SaltKey: cnas/ps/prod/field-hashing-salt
+    ConnectionStrings__Postgres: cnas/ps/prod/postgres-conn
+    # MinIO options bind from `Minio:*` (MinioOptions.SectionName), NOT
+    # `Cnas:Storage:Minio:*` — the env var prefix must match.
+    Minio__AccessKey: cnas/ps/prod/minio-access-key
+    Minio__SecretKey: cnas/ps/prod/minio-secret-key
+    Cnas__CallbackSignatures__MPay__SigningKey: cnas/ps/prod/callback-mpay-signing-key
+    Cnas__CallbackSignatures__MNotify__SigningKey: cnas/ps/prod/callback-mnotify-signing-key
+    Cnas__CallbackSignatures__MSign__SigningKey: cnas/ps/prod/callback-msign-signing-key
+
+# =============================================================================
+# postgres — Patroni-managed StatefulSet
+# =============================================================================
+# Patroni handles leader election, failover, and replica streaming. The image
+# is a Spilo build (Zalando) — operators MUST pin a specific minor tag in
+# values.production.yaml. The 3-replica default (1 primary, 2 standbys) maps
+# to TOR PSR 006 ("KPI/statistics generation must not affect transactional
+# performance") — the reporting workload is meant to land on a hot standby.
+postgres:
+  enabled: true
+  image:
+    repository: ghcr.io/zalando/spilo-16
+    tag: "3.3-p2"
+    pullPolicy: IfNotPresent
+  replicas: 3
+  storageClass: ""
+  storageSize: 100Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+  # Pod anti-affinity is PREFERRED, not REQUIRED. Small clusters (1-2 nodes)
+  # should still get the available replicas; large clusters get full host
+  # spread. Tighten to required* on production by overriding via values.
+  podAntiAffinity:
+    type: preferred
+  # Patroni-controlled superuser / replication / admin user passwords.
+  # Sourced from `secret.inline.postgresSuperuserPassword` / vault remote
+  # keys at deploy time. The application connects with the cnas user only —
+  # the superuser exists for migrations and break-glass debugging.
+  database: cnas
+  superuserUsername: postgres
+  replicationUsername: replicator
+  applicationUsername: cnas
+
+# =============================================================================
+# minio — object storage (citizen uploads + generated documents)
+# =============================================================================
+# Two operating modes:
+#   * `distributed: true` (default for staging / prod) — 4-pod StatefulSet
+#     with erasure coding. MinIO REQUIRES ≥4 disks for distributed mode.
+#   * `distributed: false` (dev override) — single-pod Deployment. Sacrifices
+#     durability for resource cost. NEVER use in production.
+minio:
+  enabled: true
+  distributed: true
+  image:
+    repository: quay.io/minio/minio
+    tag: "RELEASE.2024-12-13T22-19-12Z"
+    pullPolicy: IfNotPresent
+  replicas: 4
+  storageClass: ""
+  storageSize: 50Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1
+      memory: 2Gi
+  apiPort: 9000
+  consolePort: 9001
+
+# =============================================================================
+# networkPolicies — default-deny + targeted allow
+# =============================================================================
+# CLAUDE.md §5.4 ("Deny by default") applied to L3/L4. When `enabled: true`
+# the chart renders a default-deny policy for the namespace plus targeted
+# allow rules for the legitimate flows:
+#   * Ingress controller → API
+#   * API → Postgres, MinIO, DNS, OTLP collector, MGov external egress
+#   * Postgres ↔ Postgres (Patroni peer chatter)
+#   * API → MinIO; bucket-init job → MinIO
+networkPolicies:
+  enabled: true
+  # Namespace where the Ingress controller pods live. The default matches
+  # the upstream nginx-ingress chart; override for Traefik / Istio Gateway.
+  ingressControllerNamespace: ingress-nginx
+  ingressControllerSelector:
+    app.kubernetes.io/name: ingress-nginx
+  # Cluster-internal CIDR allowed for MGov egress. Default is the MCloud
+  # private VRF — replace with the real CIDR via values overlay. We do NOT
+  # allow blanket 0.0.0.0/0 egress; that would leak API traffic to the
+  # public internet.
+  mgovEgressCidrs:
+    - 10.0.0.0/8
+  # DNS egress — every cluster needs UDP/TCP 53 to kube-dns.
+  dnsCidrs:
+    - 10.96.0.10/32
+  # OTLP collector — leave empty to disable observability egress.
+  otlpCollectorCidrs: []
+
+# =============================================================================
+# observability / rateLimiting / fieldEncryption / fieldHashing / mgov — top-level
+# aliases.
+# =============================================================================
+# These top-level keys exist so a values overlay can override individual sub-
+# trees without re-stating the entire `config:` block. They are merged into
+# the rendered ConfigMap by the templates (api-configmap.yaml). Same data as
+# `config.*` above; the templates prefer top-level keys when set.
+observability: {}
+rateLimiting: {}
+mgov: {}
+fieldEncryption: {}
+fieldHashing: {}

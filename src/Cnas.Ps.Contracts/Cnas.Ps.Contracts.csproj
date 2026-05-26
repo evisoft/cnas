@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Cnas.Ps.Contracts</AssemblyName>
+    <RootNamespace>Cnas.Ps.Contracts</RootNamespace>
+    <Description>
+      Wire-format DTOs (InputDTO / OutputDTO) shared between the API and the Blazor WebAssembly
+      client. Zero external dependencies — must remain WASM-safe.
+      Per CLAUDE.md RULE 3, every Id in this assembly is a Sqid-encoded string.
+    </Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Cnas.Ps.Application" />
+  </ItemGroup>
+
+</Project>

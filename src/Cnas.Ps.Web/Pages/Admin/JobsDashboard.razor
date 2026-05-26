@@ -1,0 +1,295 @@
+@page "/admin/jobs"
+@using Microsoft.AspNetCore.Authorization
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@attribute [Authorize(Policy = "CnasTechAdmin")]
+@inject CnasApiClient Api
+
+@*
+    R0204 / TOR CF 20.07-08 — admin Jobs dashboard.
+
+    Shows two tables:
+      * Active triggers — every Quartz job + trigger currently registered with the
+        running scheduler, with next/last fire UTC + state (Normal/Paused/...). Each
+        row carries a "Run now" button that POSTs to /api/automation/{code}/run-now.
+      * Failed jobs — the most recent 50 dead-letter-queue entries, with a "Retry"
+        button that POSTs to /api/admin/failed-jobs/{sqid}/replay.
+
+    R1812 / TOR §12 — per-consumer DLQ filter strip + per-row "Replay" buttons.
+    The consumer dropdown narrows both tables by the canonical consumer prefix on
+    the Quartz job name (rsp- / rsud- / sfs- / siddcm- / pccm- / ecmnd- / siaisis-
+    / sive- / siaas- / fms- / eessi-). Clicking the per-row Replay button POSTs to
+    /api/automation/{code}/run-now (mirrors the iter-132 "Run now" semantics).
+
+    Authorisation is enforced server-side (the backing endpoints all live under the
+    CnasTechAdmin policy); the page surfaces transport failures as an inline error
+    rather than crashing.
+*@
+
+<PageTitle>Jobs dashboard (R0204)</PageTitle>
+
+<header class="page-header">
+    <h1>Jobs dashboard</h1>
+    <p class="hint">
+        TOR CF 20.07-08 — registered background jobs and their current state.
+    </p>
+</header>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="jobs-error">
+        <strong>Error</strong> <code>@_error</code>
+    </div>
+}
+
+<section class="consumer-filter" data-testid="consumer-filter-section">
+    @* R1812 — per-consumer filter strip. The selected value is a prefix; the
+       active-triggers and failed-jobs tables are filtered client-side. *@
+    <label for="consumer-filter">Consumer:</label>
+    <select id="consumer-filter"
+            data-testid="consumer-filter"
+            @bind="_consumerFilter">
+        <option value="">— Toate / All —</option>
+        @foreach (var c in Consumers)
+        {
+            <option value="@c.Prefix">@c.Label</option>
+        }
+    </select>
+</section>
+
+<section class="jobs-active" data-testid="jobs-active-section">
+    <h2>Active triggers</h2>
+
+    @if (_jobStates is null && _error is null)
+    {
+        <p data-testid="jobs-loading">Loading...</p>
+    }
+    else if (_jobStates is not null && _jobStates.Count == 0)
+    {
+        <p data-testid="jobs-empty-state">No jobs are currently registered with the scheduler.</p>
+    }
+    else if (_jobStates is not null)
+    {
+        var visibleJobs = FilterByConsumer(_jobStates, j => j.JobName);
+        if (visibleJobs.Count == 0)
+        {
+            <p data-testid="jobs-filter-empty">No jobs match the selected consumer filter.</p>
+        }
+        else
+        {
+        <table class="jobs-table" data-testid="jobs-state-table">
+            <thead>
+                <tr>
+                    <th>Job</th>
+                    <th>Next fire (UTC)</th>
+                    <th>Last fire (UTC)</th>
+                    <th>State</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var job in visibleJobs)
+                {
+                    <tr data-testid="jobs-state-row">
+                        <td>@job.JobName</td>
+                        <td>@(job.NextFireUtc?.ToString("u") ?? "—")</td>
+                        <td>@(job.LastFireUtc?.ToString("u") ?? "—")</td>
+                        <td>@job.State</td>
+                        <td>
+                            @* The "Replay" affordance for failed jobs lives in the DLQ table below
+                               (data-testid="failed-retry"). The active-triggers row only needs
+                               "Run now" — clicking it POSTs to /api/automation/{code}/run-now. *@
+                            <button type="button" class="link" data-testid="jobs-run-now"
+                                    @onclick="() => TriggerAsync(job.JobName)">Run now</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        }
+    }
+</section>
+
+<section class="jobs-failed" data-testid="jobs-failed-section">
+    <h2>Recent failures (last 50)</h2>
+
+    @if (_failedJobs is null && _error is null)
+    {
+        <p data-testid="failed-loading">Loading...</p>
+    }
+    else if (_failedJobs is not null && _failedJobs.Count == 0)
+    {
+        <p data-testid="failed-empty-state">No failed jobs recorded.</p>
+    }
+    else if (_failedJobs is not null)
+    {
+        var visibleFailed = FilterByConsumer(_failedJobs, j => j.JobName);
+        if (visibleFailed.Count == 0)
+        {
+            <p data-testid="failed-filter-empty">No failed jobs match the selected consumer filter.</p>
+        }
+        else
+        {
+        <table class="jobs-table" data-testid="failed-jobs-table">
+            <thead>
+                <tr>
+                    <th>Job</th>
+                    <th>Failed at (UTC)</th>
+                    <th>Exception</th>
+                    <th>Message</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var fj in visibleFailed)
+                {
+                    <tr data-testid="failed-jobs-row">
+                        <td>@fj.JobName</td>
+                        <td>@fj.FailedAtUtc.ToString("u")</td>
+                        <td>@fj.ExceptionType</td>
+                        <td>@fj.ExceptionMessage</td>
+                        <td>
+                            <button type="button" class="link" data-testid="failed-retry"
+                                    @onclick="() => RetryAsync(fj.Id)">Retry</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        }
+    }
+</section>
+
+@code {
+    /// <summary>Current list of Quartz job states; null while initial fetch is in flight.</summary>
+    private IReadOnlyList<JobStateDto>? _jobStates;
+
+    /// <summary>Current page of failed-job entries; null while initial fetch is in flight.</summary>
+    private IReadOnlyList<FailedJobOutput>? _failedJobs;
+
+    /// <summary>Inline error shown when an API call fails.</summary>
+    private string? _error;
+
+    /// <summary>
+    /// R1812 — currently-selected consumer prefix used to filter both tables.
+    /// Empty string means "show every row".
+    /// </summary>
+    private string _consumerFilter = string.Empty;
+
+    /// <summary>
+    /// R1812 — canonical list of external-consumer prefixes the iter-132 jobs
+    /// dashboard surfaces in the filter strip. Each entry pairs a stable job-
+    /// name prefix with an operator-friendly label.
+    /// </summary>
+    private static readonly IReadOnlyList<ConsumerEntry> Consumers = new[]
+    {
+        new ConsumerEntry("rsp-", "RSP"),
+        new ConsumerEntry("rsud-", "RSUD"),
+        new ConsumerEntry("sfs-", "SFS"),
+        new ConsumerEntry("siddcm-", "SIDDCM"),
+        new ConsumerEntry("pccm-", "PCCM"),
+        new ConsumerEntry("ecmnd-", "eCMND"),
+        new ConsumerEntry("siaisis-", "SIAÎSȘ"),
+        new ConsumerEntry("sive-", "SIVE"),
+        new ConsumerEntry("siaas-", "SIAAS"),
+        new ConsumerEntry("fms-", "FMS"),
+        new ConsumerEntry("eessi-", "EESSI"),
+    };
+
+    /// <summary>
+    /// R1812 — filters the supplied row set by the currently-selected consumer
+    /// prefix. When the filter is empty, returns the original list unchanged
+    /// (boxed into <see cref="IReadOnlyList{T}"/>). Stable ordinal-ignore-case
+    /// comparison matches the kebab-case prefix convention the Quartz job
+    /// names use.
+    /// </summary>
+    /// <typeparam name="T">Row type.</typeparam>
+    /// <param name="rows">Source row set.</param>
+    /// <param name="nameSelector">Selector that yields the job-name field of each row.</param>
+    /// <returns>Filtered (or unchanged) row set.</returns>
+    private IReadOnlyList<T> FilterByConsumer<T>(
+        IReadOnlyList<T> rows,
+        Func<T, string> nameSelector)
+    {
+        if (string.IsNullOrWhiteSpace(_consumerFilter)) return rows;
+        return rows
+            .Where(r => nameSelector(r).StartsWith(_consumerFilter, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    /// <summary>
+    /// R1812 — paired (prefix, label) consumer entry rendered in the filter
+    /// dropdown. The label is the operator-visible name; the prefix is the
+    /// substring matched against Quartz job names.
+    /// </summary>
+    /// <param name="Prefix">Stable job-name prefix.</param>
+    /// <param name="Label">Operator-visible label.</param>
+    private sealed record ConsumerEntry(string Prefix, string Label);
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Re-fetches both the live-jobs projection and the failed-jobs DLQ page. Called
+    /// on mount and after every action (run-now, replay) so the dashboard stays
+    /// up-to-date without a manual refresh.
+    /// </summary>
+    private async Task ReloadAsync()
+    {
+        _error = null;
+
+        var states = await Api.ListJobStatesAsync().ConfigureAwait(false);
+        if (states.IsFailure)
+        {
+            _error = states.ErrorCode;
+            _jobStates = null;
+        }
+        else
+        {
+            _jobStates = states.Value;
+        }
+
+        var failed = await Api.ListFailedJobsAsync(jobName: null, page: 1, pageSize: 50).ConfigureAwait(false);
+        if (failed.IsFailure)
+        {
+            // Keep the earlier error if any; otherwise surface the failed-jobs error.
+            _error ??= failed.ErrorCode;
+            _failedJobs = null;
+        }
+        else
+        {
+            _failedJobs = failed.Value!.Items;
+        }
+    }
+
+    /// <summary>Fires the named Quartz job on demand via the automation endpoint.</summary>
+    /// <param name="jobName">Quartz job name (e.g. <c>mpay-dispatcher</c>).</param>
+    private async Task TriggerAsync(string jobName)
+    {
+        _error = null;
+        var result = await Api.TriggerJobAsync(jobName).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            _error = result.ErrorCode;
+            return;
+        }
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Schedules a one-shot Quartz replay of the supplied DLQ entry.</summary>
+    /// <param name="failedJobSqid">Sqid-encoded DLQ row id.</param>
+    private async Task RetryAsync(string failedJobSqid)
+    {
+        _error = null;
+        var result = await Api.ReplayFailedJobAsync(failedJobSqid).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            _error = result.ErrorCode;
+            return;
+        }
+        await ReloadAsync().ConfigureAwait(false);
+    }
+}

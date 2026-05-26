@@ -1,0 +1,53 @@
+# =============================================================================
+# values.dev.yaml — local / dev cluster overrides
+# =============================================================================
+# Intent: low-resource, easy iteration. Targets a single-node dev cluster
+# (kind, k3d, minikube). Sensitive values still come from a K8s Secret —
+# create it ahead of time via `kubectl create secret generic cnas-ps-dev ...`.
+#
+# NOTE on Postgres + MinIO: this chart does NOT bundle the data tier.
+# For dev, deploy Bitnami's `postgresql` and `minio` charts separately or
+# run them via docker-compose (see ops/docker-compose.yml). The flag below
+# is purely informational — there is no in-chart subchart to enable.
+# =============================================================================
+
+api:
+  image:
+    # Override on the CLI: --set api.image.tag=dev-<sha>
+    tag: ""
+  replicaCount: 1
+  env:
+    ASPNETCORE_ENVIRONMENT: Development
+    Logging__LogLevel__Default: Debug
+    Cnas__SkipMigrations: "false"
+  # Required: name of a K8s Secret with DB conn + MGov bearers + JWT key.
+  envFromSecret: cnas-ps-dev
+
+web:
+  image:
+    tag: ""
+  replicaCount: 1
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: cnas.local
+      paths:
+        - { path: /api, pathType: Prefix, service: api }
+        - { path: /,    pathType: Prefix, service: web }
+  tls: []
+
+autoscaling:
+  enabled: false
+
+monitoring:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+# Informational only — not consumed by templates. Documents the expectation
+# that a Postgres + MinIO instance must exist alongside this release.
+# postgresql: { enabled: true, deployedSeparately: true }
+# minio:      { enabled: true, deployedSeparately: true }

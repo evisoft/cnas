@@ -1,0 +1,313 @@
+# Purpose:
+#   Build and publish container images (API + Web) and a versioned Helm chart for the
+#   CNAS Social Protection Information System. Multi-arch images (linux/amd64,
+#   linux/arm64) are pushed to GHCR alongside an OCI Helm chart in the same registry.
+#
+# When:
+#   - On manual workflow_dispatch (operator-triggered release rehearsal or hotfix).
+#   - On push of a tag matching v* (e.g. v1.0.0). Tag pushes additionally tag the
+#     images with :latest; workflow_dispatch only produces ref-specific tags.
+#
+# Cardinal rules applied:
+#   - Every action is pinned to a major version (no @main / @master / @latest).
+#   - Each job declares its own least-privilege permissions block.
+#   - No secrets are committed; GHCR uses GITHUB_TOKEN with packages:write.
+#   - github.repository_owner is lowercased per OCI registry naming requirements.
+
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      # SemVer tags only: vMAJOR.MINOR.PATCH (e.g. v1.0.0). The strict glob
+      # prevents accidental "v1" / "v1.0" / "v-rc1" tags from kicking off
+      # a production release. Pre-release suffixes (e.g. v1.0.0-rc1) are
+      # allowed because the glob "v*.*.*" matches everything starting with
+      # the three dotted numeric segments plus any trailing characters.
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+# Prevent concurrent releases for the same ref (e.g. accidental double-trigger on the same tag).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build + push the API container image.
+  # ---------------------------------------------------------------------------
+  docker-api:
+    name: Build & push API image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lowercase repository owner
+        # GHCR + OCI registries reject uppercase characters in paths. We derive a
+        # lowercased copy of the owner once and reuse it in every subsequent step.
+        id: owner
+        run: |
+          echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/cnas-ps-api
+          tags: |
+            type=ref,event=tag
+            type=ref,event=branch
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.api
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/cnas-ps-api:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/cnas-ps-api:buildcache,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Build + push the Web container image. Identical shape to docker-api.
+  # ---------------------------------------------------------------------------
+  docker-web:
+    name: Build & push Web image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lowercase repository owner
+        id: owner
+        run: |
+          echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/cnas-ps-web
+          tags: |
+            type=ref,event=tag
+            type=ref,event=branch
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.web
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/cnas-ps-web:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/cnas-ps-web:buildcache,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Package and publish the cnas-ps Helm chart.
+  #
+  # Source of truth: ops/k8s/cnas-ps  (the chart at deploy/helm/cnas-ps is
+  # legacy and intentionally NOT touched by this workflow).
+  #
+  # Publish targets:
+  #   1. GHCR as an OCI artefact at oci://ghcr.io/<owner>/charts so kubectl /
+  #      argocd / fluxcd installs can pull versioned releases.
+  #   2. The GitHub Release for the matching tag -- the .tgz is attached so
+  #      operators can download the chart without GHCR credentials.
+  #
+  # Cardinal rules:
+  #   * Tag drives version. There is no semver-bump policy here; the version
+  #     comes from the git tag, period (per task spec).
+  #   * Pinned major versions for every action.
+  #   * Least-privilege permissions:
+  #       - contents: write   -> create/attach to the GitHub Release.
+  #       - packages: write   -> push OCI artefact to GHCR.
+  #   * No new secrets: GHCR uses the workflow-injected GITHUB_TOKEN. If a
+  #     Vault-backed signing key were ever required, it would slot in here
+  #     between `helm package` and `helm push` via `cosign sign` -- left as
+  #     a documented seam, not wired.
+  # ---------------------------------------------------------------------------
+  helm-publish:
+    name: Package & publish Helm chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - docker-api
+      - docker-web
+    permissions:
+      # `contents: write` is required to attach the .tgz to the GitHub
+      # Release via softprops/action-gh-release. `contents: read` would
+      # block the release-creation API call.
+      contents: write
+      # GHCR / OCI push.
+      packages: write
+    # Prevent two racing tag pushes (e.g. an operator hot-fixing a tag)
+    # from producing inconsistent OCI artefacts under the same version.
+    concurrency:
+      group: helm-publish-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      # Source-of-truth chart path. Hard-coded here so a future relocation
+      # is a single-line change.
+      CHART_DIR: ops/k8s/cnas-ps
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lowercase repository owner
+        # GHCR + OCI registries reject uppercase characters in paths.
+        id: owner
+        run: |
+          echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve chart version from git tag
+        # Tag pushes:           refs/tags/vX.Y.Z  ->  X.Y.Z
+        # workflow_dispatch:    no tag            ->  0.0.0-dev-<sha7>
+        #
+        # The dev fallback keeps the version semver-compliant so `helm
+        # package` does not reject it; the literal "0.0.0-dev-" prefix
+        # makes accidental promotion to production easy to spot.
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved chart version: $VERSION"
+
+      - name: Set up Helm
+        # Pinned to v4 of the action. The `version` input is the Helm CLI
+        # binary version; we pin a specific 3.x release rather than
+        # `latest` so a future Helm-4 GA cannot silently upgrade the
+        # release lane and surprise operators.
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Stamp chart version into Chart.yaml
+        # Substitution choice: yq (preinstalled on ubuntu-latest) over sed.
+        # yq parses YAML structurally rather than line-by-line, so it is
+        # immune to formatting drift (extra indentation, comments on the
+        # same line as the key, quoted-string forms, etc.). The two fields
+        # we mutate -- `version` and `appVersion` -- come from the git tag.
+        # Per CLAUDE.md RULE 2 the why-comments stay in the file; we are
+        # not rewriting the chart, only stamping a tag-driven version.
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.value }}"
+          echo "Stamping Chart.yaml with version=$VERSION appVersion=$VERSION"
+          yq eval -i ".version = \"$VERSION\" | .appVersion = \"$VERSION\"" "$CHART_DIR/Chart.yaml"
+          echo "----- Chart.yaml after stamp -----"
+          yq eval '. | {"name": .name, "version": .version, "appVersion": .appVersion}' "$CHART_DIR/Chart.yaml"
+
+      - name: Helm lint (fail-fast, strict)
+        # --strict promotes warnings to errors, matching the warnings-as-
+        # errors posture mandated by CLAUDE.md. We lint the default values
+        # AND every shipped overlay so a malformed staging/production
+        # overlay cannot escape into a release.
+        run: |
+          helm lint "$CHART_DIR" --strict
+          helm lint "$CHART_DIR" --strict -f "$CHART_DIR/values.staging.yaml"
+          helm lint "$CHART_DIR" --strict -f "$CHART_DIR/values.production.yaml"
+
+      - name: Package Helm chart
+        # Chart.yaml was just stamped, so we do NOT pass --version or
+        # --app-version here -- the manifest is already correct, and
+        # passing the flags would just duplicate the substitution.
+        run: |
+          mkdir -p ./packaged
+          helm package "$CHART_DIR" --destination ./packaged
+          echo "Packaged chart contents:"
+          ls -la ./packaged
+
+      - name: Log in to GHCR for Helm
+        # helm registry login (OCI subcommand, Helm 3.8+). Token via
+        # stdin so it never appears on the command line / process list.
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} \
+            --username "${{ github.actor }}" \
+            --password-stdin
+
+      - name: Push Helm chart to GHCR (OCI)
+        # Push URL derivation:
+        #   oci://<registry>/<owner>/charts
+        # where <owner> is the lowercased ${{ github.repository_owner }}.
+        # We scope to the repo owner's `charts` namespace (not a public
+        # chart repo) per task requirement: do NOT publish to a public
+        # chart repository as a side effect.
+        run: |
+          for chart in ./packaged/*.tgz; do
+            echo "Pushing $chart to oci://${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/charts"
+            helm push "$chart" "oci://${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/charts"
+          done
+
+      - name: Attach chart .tgz to GitHub Release
+        # Only runs on tag pushes -- workflow_dispatch runs do not produce
+        # a release. softprops/action-gh-release creates the release if
+        # it does not exist and uploads any files matched by `files:`.
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./packaged/*.tgz
+          fail_on_unmatched_files: true
+
+      - name: Upload chart artifact (workflow run)
+        # Keep the workflow-run artefact too: useful for workflow_dispatch
+        # rehearsals that don't produce a GitHub Release, and as a fallback
+        # if GHCR ever becomes unavailable.
+        uses: actions/upload-artifact@v4
+        with:
+          name: cnas-ps-helm-chart
+          path: ./packaged/*.tgz
+          retention-days: 90
+          if-no-files-found: error

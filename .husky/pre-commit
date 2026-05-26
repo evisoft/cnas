@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+# ---------------------------------------------------------------------------
+# Local pre-commit 3-gate chain (CLAUDE.md §1.6, TODO.md R0005).
+#
+# Mirrors the CI workflow in `.github/workflows/ci.yml`:
+#
+#   Gate 1 (format-staged-cs):           dotnet format --verify-no-changes
+#                                        (read-only style check)
+#   Gate 2 (build-warnings-as-errors):   dotnet build  -p:TreatWarningsAsErrors=true
+#                                        (compiler + analyzers)
+#   Gate 3 (run-tests):                  fast unit tests (Core + Application + Architecture)
+#
+# All three gates are defined in `.husky/task-runner.json` under
+# `group: "pre-commit"`. This wrapper simply delegates to Husky's task runner so
+# the gate definitions live in ONE place (the JSON manifest) instead of being
+# duplicated between this shell script and CI. Husky's task runner handles
+# cross-platform invocation (PowerShell on Windows, /bin/sh on Linux/macOS)
+# without us having to hand-roll branching here.
+#
+# Slow test projects -- Infrastructure (Testcontainers), Api (WebApplicationFactory),
+# E2E (Playwright), Web (bUnit) -- run only in CI. Pre-commit must stay under
+# ~10-15 s to avoid being bypassed; CI is the safety net for the full suite.
+#
+# Cardinal rule: the format gate is read-only (`--verify-no-changes`). If it
+# fails, the contributor must run `dotnet format` themselves and re-stage --
+# we never auto-rewrite tracked files behind a commit.
+#
+# Bypass (use sparingly): `HUSKY=0 git commit -m "..."` skips the chain.
+# CI will catch anything bypassed locally.
+# ---------------------------------------------------------------------------
+. "$(dirname -- "$0")/_/husky.sh"
+
+dotnet husky run --group pre-commit

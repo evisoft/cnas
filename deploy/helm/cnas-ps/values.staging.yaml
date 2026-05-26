@@ -1,0 +1,53 @@
+# =============================================================================
+# values.staging.yaml — pre-production overrides
+# =============================================================================
+# Intent: production-like config on a smaller footprint. Uses an EXTERNAL
+# managed Postgres (RDS / Azure DB / self-managed VM) — connection string
+# arrives via the Secret named in `api.envFromSecret`.
+# =============================================================================
+
+api:
+  image:
+    tag: ""
+  replicaCount: 1
+  env:
+    ASPNETCORE_ENVIRONMENT: Staging
+    Logging__LogLevel__Default: Information
+    # Stack traces with debug info, but no Debug-level chattiness.
+    Logging__LogLevel__Microsoft__AspNetCore: Information
+  envFromSecret: cnas-ps-staging
+
+web:
+  image:
+    tag: ""
+  replicaCount: 1
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+  hosts:
+    - host: cnas-staging.gov.md
+      paths:
+        - { path: /api, pathType: Prefix, service: api }
+        - { path: /,    pathType: Prefix, service: web }
+  tls:
+    - secretName: cnas-staging-tls
+      hosts:
+        - cnas-staging.gov.md
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    interval: 30s
+    path: /metrics
+
+networkPolicy:
+  enabled: true

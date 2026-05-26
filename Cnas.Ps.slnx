@@ -1,0 +1,28 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Cnas.Ps.Core/Cnas.Ps.Core.csproj" />
+    <Project Path="src/Cnas.Ps.Contracts/Cnas.Ps.Contracts.csproj" />
+    <Project Path="src/Cnas.Ps.Application/Cnas.Ps.Application.csproj" />
+    <Project Path="src/Cnas.Ps.Infrastructure/Cnas.Ps.Infrastructure.csproj" />
+    <Project Path="src/Cnas.Ps.Api/Cnas.Ps.Api.csproj" />
+    <Project Path="src/Cnas.Ps.Web/Cnas.Ps.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Cnas.Ps.Core.Tests/Cnas.Ps.Core.Tests.csproj" />
+    <Project Path="tests/Cnas.Ps.Application.Tests/Cnas.Ps.Application.Tests.csproj" />
+    <Project Path="tests/Cnas.Ps.Infrastructure.Tests/Cnas.Ps.Infrastructure.Tests.csproj" />
+    <Project Path="tests/Cnas.Ps.Architecture.Tests/Cnas.Ps.Architecture.Tests.csproj" />
+    <Project Path="tests/Cnas.Ps.Api.Tests/Cnas.Ps.Api.Tests.csproj" />
+    <Project Path="tests/Cnas.Ps.Web.Tests/Cnas.Ps.Web.Tests.csproj" />
+    <Project Path="tests/Cnas.Ps.E2E.Tests/Cnas.Ps.E2E.Tests.csproj" />
+    <Project Path="tests/Cnas.Ps.Accessibility.Tests/Cnas.Ps.Accessibility.Tests.csproj" />
+  </Folder>
+  <Folder Name="/solution-items/">
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path=".editorconfig" />
+    <File Path="CLAUDE.md" />
+    <File Path="TODO.md" />
+    <File Path="README.md" />
+  </Folder>
+</Solution>

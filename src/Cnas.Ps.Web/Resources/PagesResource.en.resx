@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- English translations for the citizen-portal pages. -->
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+
+  <data name="App.Title"><value>Social Protection IS</value></data>
+
+  <data name="Nav.Dashboard"><value>Dashboard</value></data>
+  <data name="Nav.Applications"><value>My applications</value></data>
+  <data name="Nav.Profile"><value>Profile</value></data>
+  <data name="Nav.Logout"><value>Log out</value></data>
+
+  <data name="Index.Greeting"><value>Welcome to the CNAS e-services portal.</value></data>
+  <data name="Index.LoginButton"><value>Sign in with MPass</value></data>
+
+  <data name="Dashboard.Greeting"><value>Hello, {0}!</value></data>
+  <data name="Dashboard.KpiTotal"><value>Total applications</value></data>
+  <data name="Dashboard.KpiUnderExam"><value>In examination</value></data>
+  <data name="Dashboard.KpiApproved"><value>Approved</value></data>
+  <data name="Dashboard.RecentList"><value>Recent applications</value></data>
+
+  <data name="Applications.NewButton"><value>New application</value></data>
+  <data name="Applications.Reference"><value>Reference</value></data>
+  <data name="Applications.Status"><value>Status</value></data>
+  <data name="Applications.SubmittedAt"><value>Submitted at</value></data>
+  <data name="Applications.PayloadHeading"><value>Payload</value></data>
+  <data name="Applications.WithdrawButton"><value>Withdraw application</value></data>
+
+  <data name="New.SelectService"><value>Select a service</value></data>
+  <data name="New.SubmitButton"><value>Submit application</value></data>
+  <data name="New.Required"><value>Required</value></data>
+
+  <data name="Common.Loading"><value>Loading…</value></data>
+  <data name="Common.Error"><value>Something went wrong. Please try again later.</value></data>
+  <data name="Common.None"><value>No data available.</value></data>
+
+  <!-- Inbox (UC22) — citizen notification list. -->
+  <data name="Inbox.Title" xml:space="preserve"><value>My notifications</value></data>
+  <data name="Inbox.Loading" xml:space="preserve"><value>Loading…</value></data>
+  <data name="Inbox.Empty" xml:space="preserve"><value>You have no new notifications.</value></data>
+  <data name="Inbox.Anonymous" xml:space="preserve"><value>Sign in to see your notifications.</value></data>
+
+  <!-- R0332 / CF 12.02 — electronic-archive tabbed UI (/archive). -->
+  <data name="Archive.Title" xml:space="preserve"><value>Electronic archive</value></data>
+  <data name="Archive.Loading" xml:space="preserve"><value>Loading archive…</value></data>
+  <data name="Archive.Anonymous" xml:space="preserve"><value>Sign in as a CNAS user to access the archive.</value></data>
+  <data name="Archive.Empty" xml:space="preserve"><value>No records in this tab.</value></data>
+  <data name="Archive.SearchPlaceholder" xml:space="preserve"><value>Search by code / IDNO / IDNP…</value></data>
+  <data name="Archive.SearchButton" xml:space="preserve"><value>Search</value></data>
+  <data name="Archive.ChipActive" xml:space="preserve"><value>Active</value></data>
+  <data name="Archive.ChipArchived" xml:space="preserve"><value>Archived</value></data>
+  <data name="Archive.ChipLastUpdated" xml:space="preserve"><value>Updated</value></data>
+  <data name="Archive.TabContributors" xml:space="preserve"><value>Contributors</value></data>
+  <data name="Archive.TabInsuredPersons" xml:space="preserve"><value>Insured persons</value></data>
+  <data name="Archive.TabDecisions" xml:space="preserve"><value>Decisions</value></data>
+  <data name="Archive.TabDossiers" xml:space="preserve"><value>Dossiers</value></data>
+  <data name="Archive.TabDocuments" xml:space="preserve"><value>Documents</value></data>
+</root>

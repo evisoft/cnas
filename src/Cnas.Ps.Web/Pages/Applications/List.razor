@@ -1,0 +1,115 @@
+@page "/applications"
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    Paged listing of the caller's applications. Click a row to navigate to detail.
+    Empty/error states render explicit alerts so users always understand what they see.
+*@
+
+<PageTitle>@L["Nav.Applications"] · @L["App.Title"]</PageTitle>
+
+<header class="page-header">
+    <h1>@L["Nav.Applications"]</h1>
+    <a class="primary" href="/applications/new" data-testid="new-btn">@L["Applications.NewButton"]</a>
+</header>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="error-alert">
+        <strong>@L["Common.Error"]</strong> <code>@_error</code>
+    </div>
+}
+else if (_result is null)
+{
+    <p>@L["Common.Loading"]</p>
+}
+else if (_result.Items.Count == 0)
+{
+    <p>@L["Common.None"]</p>
+}
+else
+{
+    <table class="apps" data-testid="apps-table">
+        <thead>
+            <tr>
+                <th>@L["Applications.Reference"]</th>
+                <th>@L["Applications.SubmittedAt"]</th>
+                <th>@L["Applications.Status"]</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in _result.Items)
+            {
+                <tr class="row" data-testid="row" @onclick="() => GoToDetail(item.Id)" tabindex="0">
+                    <td>@(item.ReferenceNumber ?? item.Id)</td>
+                    <td>@item.CreatedAtUtc.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)</td>
+                    <td>@item.Status</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <div class="pager" role="navigation" aria-label="pagination">
+        <button type="button" data-testid="prev" disabled="@(_page <= 1)" @onclick="PrevAsync">«</button>
+        <span data-testid="page-indicator">@_page</span>
+        <button type="button" data-testid="next" disabled="@(!_result.HasNext)" @onclick="NextAsync">»</button>
+
+        <label>
+            <span class="sr-only">Page size</span>
+            <select data-testid="page-size" @bind="_pageSize" @bind:after="ReloadAsync">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+            </select>
+        </label>
+    </div>
+}
+
+@code {
+    private PagedResult<ApplicationListItemOutput>? _result;
+    private int _page = 1;
+    private int _pageSize = 20;
+    private string? _error;
+
+    /// <inheritdoc />
+    protected override Task OnInitializedAsync() => ReloadAsync();
+
+    /// <summary>Refetches the current page + size and updates state.</summary>
+    private async Task ReloadAsync()
+    {
+        _error = null;
+        var r = await Api.GetMyApplicationsAsync(_page, _pageSize).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _error = r.ErrorCode;
+            _result = null;
+            return;
+        }
+        _result = r.Value;
+    }
+
+    /// <summary>Navigates to the next page (no-op when at the end).</summary>
+    private async Task NextAsync()
+    {
+        if (_result is null || !_result.HasNext) return;
+        _page++;
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Navigates to the previous page (no-op when at page 1).</summary>
+    private async Task PrevAsync()
+    {
+        if (_page <= 1) return;
+        _page--;
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Row-click handler — navigates to the application detail view.</summary>
+    /// <param name="id">Sqid-encoded application id.</param>
+    private void GoToDetail(string id)
+    {
+        Navigation.NavigateTo($"/applications/{id}");
+    }
+}

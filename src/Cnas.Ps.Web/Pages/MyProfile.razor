@@ -1,0 +1,242 @@
+@page "/profile/me"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@inject CnasApiClient Api
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    R0361 / UC13 — citizen self-service profile editor. Pre-populates the form
+    from GET /api/profile/me on init, lets the citizen edit display name + email
+    + phone + language, and pushes the contact slice through
+    PUT /api/profile/contact. The language toggle is submitted separately via
+    PUT /api/profile/language (R0211) because the locale switch is high-frequency
+    and we don't want a contact rename to silently revert a recent language change.
+
+    Mirrors the Inbox / SupervisorWorkspace state-machine + data-testid hook
+    convention so the bUnit suite can target stable selectors. The page is
+    [Authorize]-gated; anonymous callers see a sign-in prompt rather than a 401.
+
+    NotificationPreferences are surfaced read-only in this iteration (toggle
+    bindings + PUT wiring land in the follow-up batch). LayoutPreferences are
+    displayed read-only as a short summary (the layout editor has its own
+    dedicated page).
+*@
+
+<PageTitle>@L["MyProfile.Title"]</PageTitle>
+
+<h1 data-testid="heading">@L["MyProfile.Title"]</h1>
+
+@if (!_session.IsAuthenticated)
+{
+    <p data-testid="anonymous-message">@L["MyProfile.Anonymous"]</p>
+}
+else if (_state == LoadState.Loading)
+{
+    <p data-testid="loading">@L["MyProfile.Loading"]</p>
+}
+else
+{
+    @if (_state == LoadState.Error || _errorCode is not null)
+    {
+        <div class="alert alert-error" role="alert" data-testid="error-alert">
+            <strong>@L["Common.Error"]</strong>
+            <code>@_errorCode</code>
+            @if (!string.IsNullOrWhiteSpace(_errorDetail))
+            {
+                <p data-testid="error-detail">@_errorDetail</p>
+            }
+        </div>
+    }
+    @if (_successMessage is not null)
+    {
+        <div class="alert alert-success" role="status" data-testid="success-toast">
+            @_successMessage
+        </div>
+    }
+
+    <form class="profile-form" @onsubmit="OnSaveAsync" @onsubmit:preventDefault data-testid="profile-form">
+        <label>
+            @L["MyProfile.DisplayName"]
+            <input type="text"
+                   data-testid="display-name-input"
+                   value="@_displayName"
+                   @onchange="@(e => _displayName = e.Value?.ToString() ?? string.Empty)" />
+        </label>
+
+        <label>
+            @L["MyProfile.Email"]
+            <input type="email"
+                   data-testid="email-input"
+                   value="@(_email ?? string.Empty)"
+                   @onchange="@(e => _email = e.Value?.ToString())" />
+        </label>
+
+        <label>
+            @L["MyProfile.Phone"]
+            <input type="tel"
+                   data-testid="phone-input"
+                   value="@(_phone ?? string.Empty)"
+                   @onchange="@(e => _phone = e.Value?.ToString())" />
+        </label>
+
+        <label>
+            @L["MyProfile.Language"]
+            <select data-testid="language-select"
+                    value="@_language"
+                    @onchange="@(e => _language = e.Value?.ToString() ?? "ro")">
+                <option value="ro">RO</option>
+                <option value="en">EN</option>
+                <option value="ru">RU</option>
+            </select>
+        </label>
+
+        <fieldset data-testid="notifications-fieldset">
+            <legend>@L["MyProfile.NotificationsHeading"]</legend>
+            <label>
+                <input type="checkbox" disabled checked="@_notifyEmail" />
+                @L["MyProfile.NotificationsEmail"]
+            </label>
+            <label>
+                <input type="checkbox" disabled checked="@_notifySms" />
+                @L["MyProfile.NotificationsSms"]
+            </label>
+            <label>
+                <input type="checkbox" disabled checked="@_notifyInApp" />
+                @L["MyProfile.NotificationsInApp"]
+            </label>
+        </fieldset>
+
+        <section data-testid="layout-summary">
+            <h2>@L["MyProfile.LayoutHeading"]</h2>
+            <p>@_layoutSummary</p>
+        </section>
+
+        <button type="button"
+                class="btn btn-primary"
+                data-testid="save-button"
+                @onclick="OnSaveAsync">
+            @L["MyProfile.SaveButton"]
+        </button>
+    </form>
+}
+
+@code {
+    /// <summary>
+    /// Authenticated session cascaded by <c>MainLayout</c>. When the cascading
+    /// value is missing (e.g. in unit tests that don't wrap the component in
+    /// a layout) we treat the caller as anonymous and skip the API call.
+    /// </summary>
+    [CascadingParameter(Name = "Session")]
+    public UserSession Session { get; set; } = UserSession.Anonymous;
+
+    /// <summary>Local non-nullable copy used inside the markup.</summary>
+    private UserSession _session = UserSession.Anonymous;
+
+    /// <summary>The page's loading state machine (Loading → Loaded | Error).</summary>
+    private LoadState _state = LoadState.Loading;
+
+    /// <summary>DisplayName bound to the corresponding input.</summary>
+    private string _displayName = string.Empty;
+
+    /// <summary>Email bound to the corresponding input — null means "clear the field".</summary>
+    private string? _email;
+
+    /// <summary>Phone bound to the corresponding input — null means "clear the field".</summary>
+    private string? _phone;
+
+    /// <summary>Two-letter language code bound to the dropdown.</summary>
+    private string _language = "ro";
+
+    /// <summary>Email-channel opt-in flag (read-only in this iteration).</summary>
+    private bool _notifyEmail = true;
+
+    /// <summary>SMS-channel opt-in flag (read-only in this iteration).</summary>
+    private bool _notifySms = true;
+
+    /// <summary>In-app channel opt-in flag (read-only in this iteration).</summary>
+    private bool _notifyInApp = true;
+
+    /// <summary>Short read-only summary of the citizen's layout preferences.</summary>
+    private string _layoutSummary = "—";
+
+    /// <summary>Stable error code surfaced by the API client when an op fails.</summary>
+    private string? _errorCode;
+
+    /// <summary>Server-provided error detail message, displayed inside the error alert when present.</summary>
+    private string? _errorDetail;
+
+    /// <summary>Success toast message; cleared back to null after the next edit.</summary>
+    private string? _successMessage;
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        _session = Session;
+
+        // Anonymous callers must not hit the API — the endpoint requires auth
+        // and would always 401. Render the anonymous prompt instead.
+        if (!_session.IsAuthenticated)
+        {
+            _state = LoadState.Loaded;
+            return;
+        }
+
+        var probe = await Api.GetMyProfileAsync().ConfigureAwait(false);
+        if (probe.IsFailure)
+        {
+            _errorCode = probe.ErrorCode;
+            _errorDetail = probe.ErrorMessage;
+            _state = LoadState.Error;
+            return;
+        }
+
+        var p = probe.Value!;
+        _displayName = p.DisplayName;
+        _email = p.Email;
+        _phone = p.Phone;
+        _language = string.IsNullOrWhiteSpace(p.PreferredLanguage) ? "ro" : p.PreferredLanguage;
+        _state = LoadState.Loaded;
+    }
+
+    /// <summary>
+    /// Form-submit handler. Issues the contact-PUT and surfaces the result via
+    /// either the success toast or the inline error region.
+    /// </summary>
+    /// <returns>Async task.</returns>
+    private async Task OnSaveAsync()
+    {
+        _errorCode = null;
+        _errorDetail = null;
+        _successMessage = null;
+
+        var input = new ProfileContactInput(
+            DisplayName: _displayName,
+            Email: string.IsNullOrWhiteSpace(_email) ? null : _email,
+            Phone: string.IsNullOrWhiteSpace(_phone) ? null : _phone);
+
+        var r = await Api.UpdateMyContactAsync(input).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _errorCode = r.ErrorCode;
+            _errorDetail = r.ErrorMessage;
+            return;
+        }
+
+        _successMessage = L["MyProfile.SaveSuccess"];
+    }
+
+    /// <summary>
+    /// Three-position state machine driving which markup branch renders:
+    /// the loading placeholder, the error alert, or the loaded form.
+    /// </summary>
+    private enum LoadState
+    {
+        /// <summary>The API call is in-flight; render the loading marker.</summary>
+        Loading,
+
+        /// <summary>The API call succeeded; render the form.</summary>
+        Loaded,
+
+        /// <summary>The initial profile fetch failed; render the error alert.</summary>
+        Error,
+    }
+}

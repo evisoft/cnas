@@ -1,0 +1,95 @@
+<!--
+  Central build configuration for the CNAS Social Protection Information System.
+  Applies to every project under the repository so warnings-as-errors, analyzers,
+  and shared targets stay in lockstep across Core, Application, Infrastructure,
+  Api, Web, and Tests.
+-->
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Quality gates -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsAsErrors />
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <AnalysisMode>AllEnabledByDefault</AnalysisMode>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+
+    <!-- XML documentation: required by CLAUDE.md RULE 2 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- CS1591: Missing XML comment for publicly visible type/member.
+         We require this for production code (Core / Application / Infrastructure / Api)
+         but suppress for test projects (handled in their own .csproj). -->
+
+    <!-- Determinism + reproducibility -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <!-- Repository metadata -->
+    <Company>Casa Națională de Asigurări Sociale</Company>
+    <Product>SI Protecția Socială</Product>
+    <Authors>CNAS</Authors>
+    <Copyright>© 2026 CNAS</Copyright>
+    <NeutralLanguage>ro</NeutralLanguage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Internal-friend assemblies for tests -->
+  </ItemGroup>
+
+  <!--
+    Test-only overrides: relax XML doc + CA1707 (underscore in method names) so we can
+    keep the Method_Scenario_Expected naming convention dictated by CLAUDE.md §3.3.
+    Detection uses the assembly suffix `.Tests` instead of $(IsTestProject) because the
+    latter is set by Microsoft.NET.Test.Sdk after Directory.Build.props is evaluated.
+  -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CA1707;CA1062;CA1031;CA1812;CA1822;CA2007</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    Auto-install local pre-commit hooks on first restore (CLAUDE.md §1.6, TODO.md R0005).
+
+    Why an MSBuild target rather than a checked-in script:
+      * Contributors run `dotnet restore` (or any build, which restores transitively)
+        before their first commit. Wiring Husky here means the hooks are present from
+        the very first build — no manual `dotnet husky install` step to forget.
+      * `dotnet tool restore` materialises the Husky binary into the dotnet tools cache
+        based on `.config/dotnet-tools.json`. We invoke it first so the subsequent
+        `dotnet husky install` (which sets `core.hooksPath=.husky`) has a tool to call.
+
+    Skip conditions:
+      * `HUSKY=0` — CI agents and Docker build stages set this to opt out cleanly.
+        Documented in README + the pre-commit wrapper.
+      * `.git/hooks/pre-commit` already exists — Husky's install only needs to run
+        ONCE per clone; we short-circuit if `core.hooksPath` is already wired (Husky
+        writes a sentinel under `.git/hooks/` even when it points `core.hooksPath`
+        elsewhere). On a non-git checkout (tarball / CI artefact) `.git/` is absent
+        and the condition also evaluates false, so the target is harmless either way.
+      * `$(BuildingForLiveUnitTesting)` true — Visual Studio's LUT loop reruns
+        Restore very frequently; skipping there keeps inner-loop turnaround fast.
+
+    Failure handling: both Exec invocations use `ContinueOnError="true"`. The hook
+    install is a developer-experience nicety, not a build-correctness gate; a missing
+    tool host or non-git working tree must never break `dotnet build`.
+  -->
+  <Target Name="HuskyInstall"
+          AfterTargets="Restore"
+          Condition=" '$(HUSKY)' != '0' AND '$(BuildingForLiveUnitTesting)' != 'true' AND Exists('$(MSBuildThisFileDirectory).git') AND !Exists('$(MSBuildThisFileDirectory).git\hooks\pre-commit') ">
+    <Exec Command="dotnet tool restore"
+          WorkingDirectory="$(MSBuildThisFileDirectory)"
+          StandardOutputImportance="Low"
+          ContinueOnError="true" />
+    <Exec Command="dotnet husky install"
+          WorkingDirectory="$(MSBuildThisFileDirectory)"
+          StandardOutputImportance="Low"
+          ContinueOnError="true" />
+  </Target>
+
+</Project>

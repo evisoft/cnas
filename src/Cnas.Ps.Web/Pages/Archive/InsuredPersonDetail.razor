@@ -1,0 +1,215 @@
+@page "/archive/insured-persons/{Sqid}"
+@using Microsoft.AspNetCore.Authorization
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@attribute [Authorize]
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+
+@*
+    R0611 / TOR CF 12.02 — per-record tabbed detail UI for an Annex-2
+    insured-person row. Four tabs render in this order:
+      1. Identity        — primary attributes from GET /api/insured-persons/{id}
+      2. Stagiu          — stagiu (insurance-period adjustments) sourced from
+                           GET /api/insured-persons/{id}/adjustments
+      3. Documents       — issued documents linked to the insured person
+      4. Audit History   — placeholder for the per-resource audit feed
+
+    Per CLAUDE.md RULE 3 every id flowing through this page is a Sqid; the
+    route segment is decoded by the backend, never by the page.
+*@
+
+<PageTitle>Insured person @Sqid</PageTitle>
+
+<header class="page-header">
+    <a href="/archive" class="back-link">&laquo; Archive</a>
+    <h1 data-testid="ipd-heading">Insured person <code>@Sqid</code></h1>
+</header>
+
+@if (_loadError is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="ipd-load-error">
+        <strong>Failed to load</strong> <code>@_loadError</code>
+    </div>
+}
+else if (_detail is null)
+{
+    <p data-testid="ipd-loading">Loading…</p>
+}
+else
+{
+    <nav class="ipd-tabs" role="tablist" data-testid="ipd-tab-strip">
+        @foreach (var tab in Tabs)
+        {
+            <button type="button"
+                    role="tab"
+                    class="@(_active == tab.Key ? "active" : "")"
+                    data-testid="ipd-tab"
+                    data-tab="@tab.Key"
+                    @onclick="@(() => SelectTab(tab.Key))">
+                @tab.Label
+            </button>
+        }
+    </nav>
+
+    <section data-testid="ipd-tab-panel" data-active-tab="@_active">
+        <div class="ipd-toolbar">
+            <button type="button"
+                    data-testid="ipd-export"
+                    data-tab="@_active"
+                    @onclick="ExportActiveTabAsync"
+                    disabled="@_exporting">
+                Export
+            </button>
+            @if (_exported)
+            {
+                <span class="success-inline" data-testid="ipd-export-ok">Export started.</span>
+            }
+            @if (_exportError is not null)
+            {
+                <span class="alert-inline" data-testid="ipd-export-error">
+                    <code>@_exportError</code>
+                </span>
+            }
+        </div>
+
+        @if (_active == "identity")
+        {
+            <dl class="ipd-identity" data-testid="ipd-identity">
+                <dt>IDNP</dt><dd data-testid="ipd-identity-idnp">@_detail.Idnp</dd>
+                <dt>Last name</dt><dd data-testid="ipd-identity-lastname">@_detail.LastName</dd>
+                <dt>First name</dt><dd>@_detail.FirstName</dd>
+                <dt>Patronymic</dt><dd>@(_detail.Patronymic ?? "—")</dd>
+                <dt>Birth date</dt><dd>@_detail.BirthDate.ToString("yyyy-MM-dd")</dd>
+                <dt>Deceased</dt><dd>@(_detail.IsDeceased ? "Yes" : "No")</dd>
+                <dt>Registered (UTC)</dt><dd>@_detail.RegisteredAtUtc.ToString("yyyy-MM-dd HH:mm")</dd>
+            </dl>
+        }
+        else if (_active == "stagiu")
+        {
+            <div data-testid="ipd-stagiu">
+                @if (_stagiuLines?.Count > 0)
+                {
+                    <ul>
+                        @foreach (var line in _stagiuLines)
+                        {
+                            <li>@line</li>
+                        }
+                    </ul>
+                }
+                else
+                {
+                    <p data-testid="ipd-stagiu-empty">No stagiu rows for this person.</p>
+                }
+            </div>
+        }
+        else if (_active == "documents")
+        {
+            <div data-testid="ipd-documents">
+                <p data-testid="ipd-documents-empty">No issued documents for this person.</p>
+            </div>
+        }
+        else if (_active == "audit")
+        {
+            <div data-testid="ipd-audit">
+                <p data-testid="ipd-audit-empty">Audit history will appear here once the per-resource feed lands.</p>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    /// <summary>Route parameter — Sqid-encoded insured-person id.</summary>
+    [Parameter]
+    public string Sqid { get; set; } = string.Empty;
+
+    /// <summary>The loaded insured-person detail; null while in flight or on error.</summary>
+    private InsuredPersonOutput? _detail;
+
+    /// <summary>Inline error from the initial GET; null on success.</summary>
+    private string? _loadError;
+
+    /// <summary>Active tab discriminator — defaults to Identity.</summary>
+    private string _active = "identity";
+
+    /// <summary>True while an export download request is in flight.</summary>
+    private bool _exporting;
+
+    /// <summary>True for one render after a successful export.</summary>
+    private bool _exported;
+
+    /// <summary>Inline export error; null on success.</summary>
+    private string? _exportError;
+
+    /// <summary>Cached stagiu projection for the corresponding tab.</summary>
+    private IReadOnlyList<string>? _stagiuLines;
+
+    /// <summary>Tab catalog rendered in this order.</summary>
+    private static readonly (string Key, string Label)[] Tabs =
+    [
+        ("identity", "Identity"),
+        ("stagiu", "Stagiu"),
+        ("documents", "Documents"),
+        ("audit", "Audit History"),
+    ];
+
+    /// <inheritdoc />
+    protected override async Task OnParametersSetAsync()
+    {
+        _loadError = null;
+        _detail = null;
+        _active = "identity";
+        _exported = false;
+        _exportError = null;
+
+        var r = await Api.GetInsuredPersonAsync(Sqid).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _loadError = r.ErrorCode;
+            return;
+        }
+        _detail = r.Value;
+    }
+
+    /// <summary>Switches active tab; lazy-loads tab content as needed.</summary>
+    /// <param name="key">Tab discriminator.</param>
+    private Task SelectTab(string key)
+    {
+        if (_active == key) return Task.CompletedTask;
+        _active = key;
+        _exported = false;
+        _exportError = null;
+
+        // Stagiu tab content is sourced from the per-person stagiu projection
+        // that will land alongside R0910 (laborbook + adjustments aggregate).
+        // Until then we render an explicit empty-state — the tab is wired so
+        // the UI shape ships now and the data feed plugs in later.
+        if (key == "stagiu" && _stagiuLines is null)
+        {
+            _stagiuLines = Array.Empty<string>();
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Triggers a per-tab export for the active tab.</summary>
+    private async Task ExportActiveTabAsync()
+    {
+        _exporting = true;
+        _exported = false;
+        _exportError = null;
+        try
+        {
+            var r = await Api.DownloadInsuredPersonTabExportAsync(Sqid, _active).ConfigureAwait(false);
+            if (r.IsFailure)
+            {
+                _exportError = r.ErrorCode;
+                return;
+            }
+            _exported = true;
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+}

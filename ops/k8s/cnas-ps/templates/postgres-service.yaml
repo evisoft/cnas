@@ -1,0 +1,68 @@
+{{/*
+=============================================================================
+Services — Patroni headless + leader (rw) service.
+=============================================================================
+Two services per Patroni cluster:
+
+  1. Headless service (clusterIP: None) — DNS-only. Each Postgres pod gets
+     a stable A record at <pod>.<svc>.<ns>.svc.cluster.local. Patroni uses
+     this for member discovery.
+
+  2. RW service — selects the pod labelled `role: master`. Patroni
+     attaches that label to whichever pod currently holds the leader lease.
+     The application connection string targets THIS service so traffic
+     always lands on the writer.
+
+Why no read-only (ro) service? Read replicas exist (Patroni follows the
+leader's WAL) and TOR PSR 006 calls them out, but the .NET application
+currently makes no use of a separate connection string for reporting. Add
+a `*-postgres-ro` service in a follow-up batch when the reporting workload
+actually splits.
+=============================================================================
+*/}}
+{{- if .Values.postgres.enabled }}
+# --- Headless service (Patroni member discovery) ---------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cnas-ps.postgresHeadlessServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+    - name: patroni-api
+      port: 8008
+      targetPort: 8008
+      protocol: TCP
+  selector:
+    {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+---
+# --- RW service (current leader only) --------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cnas-ps.postgresRwServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+  selector:
+    {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "postgres") | nindent 4 }}
+    # Patroni attaches role=master to whichever pod currently holds the
+    # lease. The selector inherits the standard CNAS-PS labels AND adds
+    # the role filter so only the leader pod is selected.
+    role: master
+{{- end }}

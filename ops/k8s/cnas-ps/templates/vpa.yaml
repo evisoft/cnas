@@ -1,0 +1,72 @@
+{{/*
+=============================================================================
+VerticalPodAutoscaler — API (R2118)
+=============================================================================
+TOR ARH 009 ("rational resource use, HPA/VPA") closes alongside the existing
+HPA by adding a Vertical Pod Autoscaler that right-sizes the API container's
+CPU + memory requests over the long term. The two autoscalers compose:
+
+  * HPA owns horizontal scale: react to load spikes by adding replicas. The
+    target metric is CPU 70% / memory 80% — see templates/api-hpa.yaml for
+    the full trade-off discussion.
+  * VPA owns vertical scale: observe steady-state utilisation per pod and
+    grow / shrink the requests so the requests track real usage. This frees
+    operators from hand-tuning the resources block on every traffic shape
+    change.
+
+`autoscaling.vpa.enabled` is opt-in. The recommender component of VPA is
+cluster-scoped (a single deployment); this template only renders the per-
+workload CRD. Operators MUST install the VPA controller before flipping the
+toggle, otherwise the CRD will exist but no recommendations will be applied.
+
+Update modes:
+  * `Off` — recommender computes targets but does NOT restart pods. Use for
+    a baseline observation period before turning on Auto.
+  * `Initial` — VPA assigns recommendations at pod creation only (no in-place
+    restarts). Good for slow burns where a pod restart would cause user pain.
+  * `Auto` — VPA evicts pods to apply new recommendations as the workload
+    drifts. Recommended after a 7-day Off window confirms reasonable bands.
+
+The targetRef points at the API Deployment; the same name flows through the
+HPA's scaleTargetRef so an operator can verify both autoscalers reference
+the same workload via `kubectl get hpa,vpa -n cnas-ps`.
+
+Anti-coupling with HPA: HPA must NOT autoscale on the same resource VPA
+adjusts. Our HPA observes CPU+memory **utilisation** percentages, and VPA
+sets the **requests** that define the denominator. This is the documented
+recommended layout in the upstream VPA docs (see "VPA with HPA").
+=============================================================================
+*/}}
+{{- if and .Values.autoscaling .Values.autoscaling.vpa .Values.autoscaling.vpa.enabled }}
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{ include "cnas-ps.apiName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "cnas-ps.apiName" . }}
+  updatePolicy:
+    updateMode: {{ .Values.autoscaling.vpa.updateMode | default "Off" | quote }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: "*"
+        # Floors / ceilings keep the recommender within operationally sane
+        # bands. Overrides flow from .Values.autoscaling.vpa.{minAllowed,
+        # maxAllowed} when set; otherwise the defaults match the HPA's
+        # working assumption that a single pod handles ~300 concurrent
+        # sessions at 500m / 1Gi.
+        minAllowed:
+          cpu: {{ default "100m" (dig "minAllowed" "cpu" "" .Values.autoscaling.vpa) | quote }}
+          memory: {{ default "256Mi" (dig "minAllowed" "memory" "" .Values.autoscaling.vpa) | quote }}
+        maxAllowed:
+          cpu: {{ default "4" (dig "maxAllowed" "cpu" "" .Values.autoscaling.vpa) | quote }}
+          memory: {{ default "4Gi" (dig "maxAllowed" "memory" "" .Values.autoscaling.vpa) | quote }}
+        controlledResources:
+          - cpu
+          - memory
+{{- end }}

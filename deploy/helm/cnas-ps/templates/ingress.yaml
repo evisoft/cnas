@@ -1,0 +1,54 @@
+{{/*
+=============================================================================
+Ingress — optional HTTP(S) gateway in front of Web and API.
+=============================================================================
+Only rendered when `.Values.ingress.enabled` is true. Each `hosts[].paths[]`
+entry routes either to the API service (`service: api`) or the Web service
+(`service: web`). TLS is operator-supplied (cert-manager, manual, etc.).
+Idempotent.
+=============================================================================
+*/}}
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "cnas-ps.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                {{- if eq .service "api" }}
+                name: {{ include "cnas-ps.apiName" $ }}
+                port:
+                  number: {{ $.Values.api.service.port }}
+                {{- else if eq .service "web" }}
+                name: {{ include "cnas-ps.webName" $ }}
+                port:
+                  number: {{ $.Values.web.service.port }}
+                {{- else }}
+                {{- fail (printf "ingress.hosts[].paths[].service must be 'api' or 'web' (got %q)" .service) }}
+                {{- end }}
+          {{- end }}
+    {{- end }}
+{{- end }}

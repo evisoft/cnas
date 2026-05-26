@@ -1,0 +1,211 @@
+@page "/admin/cron"
+@using Microsoft.AspNetCore.Authorization
+@using Cnas.Ps.Contracts
+@using Cnas.Ps.Web.Backend
+@attribute [Authorize(Policy = "CnasTechAdmin")]
+@inject CnasApiClient Api
+
+@*
+    R0200 / TOR CF 20.01-03, MR 012 — admin Cron Schedules editor.
+
+    Lists every embedded Quartz job with its currently-effective cron expression and
+    paused flag. Operators (CnasTechAdmin policy) can:
+
+      * edit the cron expression inline (client-side validation: non-empty);
+      * save the new cron via POST /api/automation/schedules/{code};
+      * toggle the paused flag via POST/DELETE /api/automation/schedules/{code}/pause.
+
+    Authorisation is enforced server-side; the page surfaces transport / validation
+    failures as an inline alert rather than crashing.
+*@
+
+<PageTitle>Cron schedules (R0200)</PageTitle>
+
+<header class="page-header">
+    <h1>Cron schedules</h1>
+    <p class="hint">
+        TOR CF 20.01-03 / MR 012 — operator-configurable cron cadence and pause toggle
+        for every embedded Quartz job.
+    </p>
+</header>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="cron-error">
+        <strong>Error</strong> <code>@_error</code>
+    </div>
+}
+
+<section class="cron-schedules" data-testid="cron-section">
+    @if (_schedules is null && _error is null)
+    {
+        <p data-testid="cron-loading">Loading...</p>
+    }
+    else if (_schedules is not null && _schedules.Count == 0)
+    {
+        <p data-testid="cron-empty-state">No jobs are currently registered with the scheduler.</p>
+    }
+    else if (_schedules is not null)
+    {
+        <table class="cron-table" data-testid="cron-table">
+            <thead>
+                <tr>
+                    <th>Job</th>
+                    <th>Cron expression</th>
+                    <th>Default</th>
+                    <th>Paused</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _schedules)
+                {
+                    <tr data-testid="cron-row">
+                        <td>@row.JobCode</td>
+                        <td>
+                            <input type="text"
+                                   value="@GetEditValue(row)"
+                                   @oninput="@(e => OnEditAsync(row.JobCode, e.Value?.ToString() ?? string.Empty))"
+                                   data-testid="cron-edit-@row.JobCode" />
+                            @if (!IsValidCron(GetEditValue(row)))
+                            {
+                                <span class="cron-warn" data-testid="cron-warn-@row.JobCode">Required</span>
+                            }
+                        </td>
+                        <td><code>@row.DefaultCronExpression</code></td>
+                        <td>@(row.IsPaused ? "yes" : "no")</td>
+                        <td>
+                            <button type="button" class="link" data-testid="cron-save-@row.JobCode"
+                                    disabled="@(!IsValidCron(GetEditValue(row)))"
+                                    @onclick="() => SaveAsync(row.JobCode)">Save</button>
+                            @if (row.IsPaused)
+                            {
+                                <button type="button" class="link" data-testid="cron-resume-@row.JobCode"
+                                        @onclick="() => ResumeAsync(row.JobCode)">Resume</button>
+                            }
+                            else
+                            {
+                                <button type="button" class="link" data-testid="cron-pause-@row.JobCode"
+                                        @onclick="() => PauseAsync(row.JobCode)">Pause</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+@code {
+    /// <summary>Current snapshot of cron-schedule rows; null while initial fetch is in flight.</summary>
+    private IReadOnlyList<JobScheduleOverrideDto>? _schedules;
+
+    /// <summary>Inline error shown when an API call fails.</summary>
+    private string? _error;
+
+    /// <summary>
+    /// Per-row local edit buffer keyed by JobCode. Lets the user type a new cron value
+    /// before pressing Save without losing the existing server-side row state.
+    /// </summary>
+    private readonly Dictionary<string, string> _edits = new(StringComparer.Ordinal);
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Re-fetches the cron-schedule list and resets the per-row edit buffer.</summary>
+    private async Task ReloadAsync()
+    {
+        _error = null;
+        var result = await Api.ListCronSchedulesAsync().ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            _error = result.ErrorCode;
+            _schedules = null;
+            return;
+        }
+        _schedules = result.Value;
+        _edits.Clear();
+        foreach (var row in _schedules)
+        {
+            _edits[row.JobCode] = row.CronExpression;
+        }
+    }
+
+    /// <summary>
+    /// Returns the cron expression currently shown in the per-row text input —
+    /// either the staged edit (if the user typed something) or the server value.
+    /// </summary>
+    /// <param name="row">Row carrying the canonical server value.</param>
+    /// <returns>The string to render inside the input.</returns>
+    private string GetEditValue(JobScheduleOverrideDto row)
+        => _edits.TryGetValue(row.JobCode, out var v) ? v : row.CronExpression;
+
+    /// <summary>Updates the local edit buffer for <paramref name="jobCode"/>.</summary>
+    /// <param name="jobCode">Stable job code.</param>
+    /// <param name="value">New input value.</param>
+    private Task OnEditAsync(string jobCode, string value)
+    {
+        _edits[jobCode] = value;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Cheap client-side cron-shape gate — non-null, non-whitespace, 6-7 tokens.
+    /// The server is the source of truth for the deep parse via
+    /// <c>CronExpression.IsValidExpression</c>.
+    /// </summary>
+    /// <param name="value">Candidate cron expression.</param>
+    /// <returns><c>true</c> when the value looks like it MIGHT parse.</returns>
+    private static bool IsValidCron(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var tokens = value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return tokens.Length is 6 or 7;
+    }
+
+    /// <summary>POSTs the staged cron value for <paramref name="jobCode"/> and reloads.</summary>
+    /// <param name="jobCode">Stable job code.</param>
+    private async Task SaveAsync(string jobCode)
+    {
+        _error = null;
+        var cron = GetEditValue(_schedules!.First(r => r.JobCode == jobCode));
+        var result = await Api.UpsertCronScheduleAsync(jobCode, cron).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            _error = result.ErrorCode;
+            return;
+        }
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>POSTs a pause request for <paramref name="jobCode"/> and reloads.</summary>
+    /// <param name="jobCode">Stable job code.</param>
+    private async Task PauseAsync(string jobCode)
+    {
+        _error = null;
+        var result = await Api.PauseCronScheduleAsync(jobCode).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            _error = result.ErrorCode;
+            return;
+        }
+        await ReloadAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>DELETEs the pause flag for <paramref name="jobCode"/> and reloads.</summary>
+    /// <param name="jobCode">Stable job code.</param>
+    private async Task ResumeAsync(string jobCode)
+    {
+        _error = null;
+        var result = await Api.ResumeCronScheduleAsync(jobCode).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            _error = result.ErrorCode;
+            return;
+        }
+        await ReloadAsync().ConfigureAwait(false);
+    }
+}

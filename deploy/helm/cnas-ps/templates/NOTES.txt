@@ -1,0 +1,50 @@
+{{/*
+=============================================================================
+Post-install / post-upgrade message printed by Helm.
+Keep this brief and actionable — it's the operator's quick orientation card.
+=============================================================================
+*/}}
+CNAS PS chart {{ .Chart.Version }} (app {{ .Chart.AppVersion }}) installed into
+namespace "{{ .Release.Namespace }}" as release "{{ .Release.Name }}".
+
+API image: {{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}
+Web image: {{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}
+
+-------------------------------------------------------------------------------
+Reach the services
+-------------------------------------------------------------------------------
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+{{- end }}
+{{- else }}
+  Ingress is disabled. Port-forward locally:
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cnas-ps.webName" . }} 8080:{{ .Values.web.service.port }}
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cnas-ps.apiName" . }} 8081:{{ .Values.api.service.port }}
+{{- end }}
+
+-------------------------------------------------------------------------------
+Health endpoints (API)
+-------------------------------------------------------------------------------
+  /health/live   — liveness (process up)
+  /health/ready  — readiness (DB + downstream deps healthy)
+
+-------------------------------------------------------------------------------
+Secrets
+-------------------------------------------------------------------------------
+{{- if .Values.api.envFromSecret }}
+  API consumes secrets from: Secret/{{ .Values.api.envFromSecret }}
+{{- else }}
+  WARNING: api.envFromSecret is empty. Without DB credentials, JWT keys
+           and MGov bearers, the API will fail at startup.
+{{- end }}
+{{- if .Values.secrets.externalOperator }}
+  ExternalSecret is enabled: {{ .Values.secrets.externalSecretName }}
+{{- end }}
+
+-------------------------------------------------------------------------------
+Useful commands
+-------------------------------------------------------------------------------
+  Watch the rollout:   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "cnas-ps.apiName" . }}
+  Tail API logs:       kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "cnas-ps.apiName" . }}
+  Rollback:            helm -n {{ .Release.Namespace }} rollback {{ .Release.Name }}

@@ -1,0 +1,28 @@
+{{/*
+=============================================================================
+Service for the API.
+=============================================================================
+ClusterIP by default — exposure is via the Ingress (or a sidecar gateway).
+Idempotent.
+=============================================================================
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cnas-ps.apiName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+  {{- with .Values.api.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.api.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: {{ .Values.api.service.targetPort }}
+      protocol: TCP
+  selector:
+    {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 4 }}

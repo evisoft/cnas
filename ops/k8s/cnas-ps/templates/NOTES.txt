@@ -1,0 +1,61 @@
+
+=============================================================================
+CNAS „Protecția Socială" — release "{{ .Release.Name }}" deployed.
+=============================================================================
+
+  Namespace: {{ .Release.Namespace }}
+  Chart:     {{ .Chart.Name }}-{{ .Chart.Version }} (appVersion {{ .Chart.AppVersion }})
+  API image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+
+{{- if .Values.ingress.enabled }}
+
+The API is fronted by an Ingress:
+
+  Host:      {{ .Values.ingress.host }}
+  TLS:       {{ if .Values.ingress.tls.enabled }}enabled ({{ .Values.ingress.tls.secretName }}){{ else }}DISABLED — only acceptable in dev{{ end }}
+
+  Probe the live endpoint:
+    curl -sS https://{{ .Values.ingress.host }}/health/live | jq .
+
+  Probe the ready endpoint (returns 503 while any dep is unhealthy):
+    curl -sS https://{{ .Values.ingress.host }}/health/ready | jq .
+
+{{- else }}
+
+Ingress is disabled. Port-forward to reach the API:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cnas-ps.apiName" . }} 8080:80
+  curl -sS http://localhost:8080/health/live
+{{- end }}
+
+Tail API logs (all replicas):
+
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=api -f --tail=100
+
+Run EF Core migrations against the deployed Postgres (one-shot job pattern):
+
+  # 1. Port-forward to the Postgres rw service:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cnas-ps.postgresRwServiceName" . }} 5432:5432 &
+
+  # 2. Export the connection string locally (use a non-prod secret):
+  export ConnectionStrings__Postgres="Host=localhost;Port=5432;Database={{ .Values.postgres.database }};Username={{ .Values.postgres.applicationUsername }};Password=<from-secret>;SslMode=Require"
+
+  # 3. Apply migrations:
+  dotnet ef database update --project src/Cnas.Ps.Infrastructure --startup-project src/Cnas.Ps.Api
+
+{{- if .Values.hpa.enabled }}
+
+HorizontalPodAutoscaler is enabled. Watch live replica counts:
+
+  kubectl -n {{ .Release.Namespace }} get hpa -w
+{{- end }}
+
+{{- if .Values.networkPolicies.enabled }}
+
+NetworkPolicies are in default-deny mode. If a NEW egress endpoint is added
+(new MGov service, new collector), update networkPolicies.mgovEgressCidrs
+or networkPolicies.otlpCollectorCidrs in values and run `helm upgrade`.
+{{- end }}
+
+For full configuration reference and the secrets-rotation matrix:
+  ops/k8s/cnas-ps/README.md

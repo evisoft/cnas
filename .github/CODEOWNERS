@@ -1,0 +1,30 @@
+# Repository review ownership for SI "Protectia Sociala".
+#
+# The two-owner rule below is intentional for sensitive areas: every security,
+# identity, audit, dependency, deployment, and external-callback path must route
+# to both the application-security and platform-maintainer teams. During handover,
+# replace these team slugs with the concrete CNAS organisation/team handles.
+
+* @cnas/application-security @cnas/platform-maintainers
+
+# Authentication, authorization, and API security composition.
+/src/Cnas.Ps.Api/Composition/AuthenticationComposition.cs @cnas/application-security @cnas/platform-maintainers
+/src/Cnas.Ps.Api/Composition/AuthorizationComposition.cs @cnas/application-security @cnas/platform-maintainers
+/src/Cnas.Ps.Api/Security/ @cnas/application-security @cnas/platform-maintainers
+
+# External identity and MGov callback surfaces.
+/src/Cnas.Ps.Infrastructure/MGov/ @cnas/application-security @cnas/platform-maintainers
+/src/Cnas.Ps.Api/Controllers/MPayCallbackController.cs @cnas/application-security @cnas/platform-maintainers
+/src/Cnas.Ps.Api/Controllers/MNotifyTemplatesAdminController.cs @cnas/application-security @cnas/platform-maintainers
+/src/Cnas.Ps.Api/Controllers/MPassSamlController.cs @cnas/application-security @cnas/platform-maintainers
+
+# Crypto, token, and audit-sensitive infrastructure.
+/src/Cnas.Ps.Infrastructure/Security/ @cnas/application-security @cnas/platform-maintainers
+/src/Cnas.Ps.Infrastructure/Services/Audit/ @cnas/application-security @cnas/platform-maintainers
+/src/Cnas.Ps.Infrastructure/Services/MNotify/ @cnas/application-security @cnas/platform-maintainers
+
+# Dependency, CI, and deployment surfaces.
+/Directory.Packages.props @cnas/application-security @cnas/platform-maintainers
+/deploy/ @cnas/application-security @cnas/platform-maintainers
+/ops/ @cnas/application-security @cnas/platform-maintainers
+/.github/workflows/ @cnas/application-security @cnas/platform-maintainers

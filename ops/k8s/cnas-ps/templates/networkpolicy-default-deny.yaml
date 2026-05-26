@@ -1,0 +1,37 @@
+{{/*
+=============================================================================
+NetworkPolicy — default deny (ingress + egress).
+=============================================================================
+CLAUDE.md §5.4 ("deny by default") applied to L3/L4. Once this policy lands
+the namespace becomes a black hole — nothing can reach pods, nothing can
+leave pods — UNTIL a more permissive NetworkPolicy explicitly allows a
+flow.
+
+The follow-on networkpolicy-* files re-open the LEGITIMATE flows:
+  * networkpolicy-api.yaml       — ingress from Ingress controller, egress
+                                   to Postgres, MinIO, DNS, OTLP, MGov.
+  * networkpolicy-postgres.yaml  — ingress from API + Patroni peers.
+  * networkpolicy-minio.yaml     — ingress from API + same-component peers.
+
+Operators who add a NEW egress (e.g. a new MGov service) MUST update
+networkPolicies.mgovEgressCidrs in values — not by editing this policy.
+
+Why empty podSelector + both PolicyTypes? An empty selector matches every
+pod in the namespace; declaring both Ingress AND Egress under
+PolicyTypes (with no rules) is the canonical default-deny pattern.
+=============================================================================
+*/}}
+{{- if .Values.networkPolicies.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cnas-ps.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+{{- end }}

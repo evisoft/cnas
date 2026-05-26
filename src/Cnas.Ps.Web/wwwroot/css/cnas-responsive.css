@@ -1,0 +1,187 @@
+/* =============================================================================
+ * HG 677/2025 — Responsive grid & viewport utilities (TOR UI 005-006 / R0222)
+ *
+ * File version: 1.0.0 (R0222)
+ * Authority   : Hotărârea Guvernului nr. 677/2025; TOR UI 005-006
+ * Scope       : Citizen-portal Blazor WASM (Cnas.Ps.Web).
+ *
+ * Provides a tiny opt-in responsive utility set so Blazor pages can ship a
+ * predictable layout WITHOUT pulling in Bootstrap / Tailwind. Three primitives:
+ *
+ *   1. .cnas-container / .cnas-container-fluid  — max-width wrapper.
+ *   2. .cnas-row + .cnas-col-N                  — flexbox grid (mobile-first).
+ *   3. .cnas-show-* / .cnas-hide-*              — viewport-conditional display.
+ *
+ * Breakpoint scale (matches --cnas-bp-* tokens in hg677-tokens.css):
+ *
+ *   sm  : 640 px   small phones landscape / large phones portrait
+ *   md  : 768 px   tablet portrait
+ *   lg  : 1024 px  tablet landscape / small laptop
+ *   xl  : 1360 px  BASELINE — desktop, SI Protecția Socială target
+ *   2xl : 1920 px  full HD desktop / wide monitor
+ *
+ * NOTE — Why literal pixel values in @media:
+ *   CSS Custom Properties cannot be referenced inside @media query conditions
+ *   (per the CSS Cascade spec the media-query is resolved before variables).
+ *   The literals below MUST stay in sync with the --cnas-bp-* tokens; the
+ *   architecture test `ResponsiveBreakpointsTests` pins both sides so drift
+ *   produces a build failure rather than a silent layout regression.
+ *
+ * NOTE — Mobile-first:
+ *   All defaults target the smallest viewport. Larger breakpoints opt INTO
+ *   richer layouts via min-width queries. This matches HG 677/2025 guidance
+ *   and avoids "shrink desktop down" reflows that break at narrow widths.
+ *
+ * DEFER (R0222 scope) — real component breakpoint behaviour (navbar collapse,
+ * table → card transformation, drawer-vs-sidebar nav) lives with the component
+ * library work; this sheet only provides the layout scaffolding.
+ * ========================================================================== */
+
+/* -----------------------------------------------------------------------------
+ * Container — bounded, centred wrapper. Use for the outer page shell so the
+ * citizen portal never exceeds the 1360 px baseline; content beyond that on
+ * 1920 px screens lives in the gutter and stays readable.
+ * -------------------------------------------------------------------------- */
+.cnas-container {
+    max-width:     1360px;
+    margin-left:   auto;
+    margin-right:  auto;
+    padding-left:  var(--cnas-space-4);
+    padding-right: var(--cnas-space-4);
+    width:         100%;
+    box-sizing:    border-box;
+}
+
+/* Fluid variant — full width, useful for staff-console pages that want to
+ * fill the viewport (large tables, multi-pane workbenches). Same horizontal
+ * padding as the bounded container so children align consistently. */
+.cnas-container-fluid {
+    width:         100%;
+    padding-left:  var(--cnas-space-4);
+    padding-right: var(--cnas-space-4);
+    box-sizing:    border-box;
+}
+
+/* On phones, shave the container's horizontal padding so content has more
+ * room. Matches HG 677/2025 "edge-friendly mobile" recommendation. */
+@media (max-width: 767px) {
+    .cnas-container,
+    .cnas-container-fluid {
+        padding-left:  var(--cnas-space-3);
+        padding-right: var(--cnas-space-3);
+    }
+}
+
+/* -----------------------------------------------------------------------------
+ * Row + column primitives — a 12-column flexbox grid expressed as percentages.
+ *
+ * Defaults (mobile-first):
+ *   .cnas-row     : flex container, wraps, gap = --cnas-space-4.
+ *   .cnas-col-N   : on the smallest viewport every column is 100 % wide
+ *                   (stacks vertically). At ≥ sm (640 px) it picks up its
+ *                   percentage width.
+ *
+ * Why gap instead of margins:
+ *   The CSS `gap` property gives consistent spacing between flex children
+ *   without the legacy "negative margin on row, padding on col" Bootstrap
+ *   trick — simpler, no overflow side-effects, no need for .row-gutter
+ *   utilities, and respects RTL automatically.
+ * -------------------------------------------------------------------------- */
+.cnas-row {
+    display:   flex;
+    flex-wrap: wrap;
+    gap:       var(--cnas-space-4);
+    width:     100%;
+}
+
+/* Mobile-first: every column is full-width and stacks until ≥ sm.
+ * Using `flex: 0 0 100%` (vs. `width: 100%`) keeps the column's intrinsic
+ * size locked even inside nested flex contexts. */
+.cnas-col-12,
+.cnas-col-6,
+.cnas-col-4,
+.cnas-col-3 {
+    flex:       0 0 100%;
+    max-width:  100%;
+    box-sizing: border-box;
+}
+
+/* ≥ sm (640 px) — columns adopt their percentage widths. The `calc(...)`
+ * subtracts a share of the row gap so N columns + (N-1) gaps still fit
+ * inside the row exactly. */
+@media (min-width: 640px) {
+    .cnas-col-12 { flex: 0 0 100%;                                   max-width: 100%; }
+    .cnas-col-6  { flex: 0 0 calc(50%       - (var(--cnas-space-4) / 2)); max-width: calc(50%       - (var(--cnas-space-4) / 2)); }
+    .cnas-col-4  { flex: 0 0 calc(33.3333%  - (var(--cnas-space-4) * 2 / 3)); max-width: calc(33.3333%  - (var(--cnas-space-4) * 2 / 3)); }
+    .cnas-col-3  { flex: 0 0 calc(25%       - (var(--cnas-space-4) * 3 / 4)); max-width: calc(25%       - (var(--cnas-space-4) * 3 / 4)); }
+}
+
+/* -----------------------------------------------------------------------------
+ * Show / hide utilities — viewport-conditional display.
+ *
+ *   .cnas-show-{bp}-up  : hidden by default, displayed at ≥ bp.
+ *   .cnas-hide-{bp}-down: displayed by default, hidden at < bp.
+ *
+ * Useful for "show this only on desktop" (e.g. a side nav) or "hide this on
+ * phones" (e.g. a dense table). Implemented as `display: none` ↔ `display: block`
+ * — components that need a different display value (`flex`, `inline-block`)
+ * should write their own bespoke breakpoint rules.
+ *
+ * The xl-up breakpoint MUST land at exactly 1360 px to match the baseline so
+ * "desktop-only" content shows at the smallest supported desktop size.
+ * -------------------------------------------------------------------------- */
+
+/* sm — 640 px */
+.cnas-show-sm-up   { display: none;  }
+.cnas-hide-sm-down { display: block; }
+
+@media (min-width: 640px) {
+    .cnas-show-sm-up { display: block; }
+}
+@media (max-width: 639px) {
+    .cnas-hide-sm-down { display: none; }
+}
+
+/* md — 768 px */
+.cnas-show-md-up   { display: none;  }
+.cnas-hide-md-down { display: block; }
+
+@media (min-width: 768px) {
+    .cnas-show-md-up { display: block; }
+}
+@media (max-width: 767px) {
+    .cnas-hide-md-down { display: none; }
+}
+
+/* lg — 1024 px */
+.cnas-show-lg-up   { display: none;  }
+.cnas-hide-lg-down { display: block; }
+
+@media (min-width: 1024px) {
+    .cnas-show-lg-up { display: block; }
+}
+@media (max-width: 1023px) {
+    .cnas-hide-lg-down { display: none; }
+}
+
+/* xl — 1360 px (BASELINE) */
+.cnas-show-xl-up   { display: none;  }
+.cnas-hide-xl-down { display: block; }
+
+@media (min-width: 1360px) {
+    .cnas-show-xl-up { display: block; }
+}
+@media (max-width: 1359px) {
+    .cnas-hide-xl-down { display: none; }
+}
+
+/* 2xl — 1920 px */
+.cnas-show-2xl-up   { display: none;  }
+.cnas-hide-2xl-down { display: block; }
+
+@media (min-width: 1920px) {
+    .cnas-show-2xl-up { display: block; }
+}
+@media (max-width: 1919px) {
+    .cnas-hide-2xl-down { display: none; }
+}

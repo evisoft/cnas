@@ -1,0 +1,78 @@
+@inject IClientToastQueue Queue
+@implements IDisposable
+
+@*
+    R0170 / TOR CF 22.02 — global toast container. The component renders one
+    <article> per queued toast and re-renders whenever IClientToastQueue.Changed
+    fires (push via ClientNotificationPoller or programmatic Enqueue).
+*@
+
+<div class="toast-host" role="region" aria-label="Notifications" data-testid="toast-host">
+    @foreach (var t in _snapshot)
+    {
+        <article class="toast toast-@t.Level.ToString().ToLowerInvariant()"
+                 role="status"
+                 data-testid="toast-item"
+                 data-toast-id="@t.Id">
+            <header class="toast-title">@t.Title</header>
+            <p class="toast-body">
+                @if (!string.IsNullOrWhiteSpace(t.DeepLinkUrl))
+                {
+                    <a href="@t.DeepLinkUrl" data-testid="toast-link">@t.Body</a>
+                }
+                else
+                {
+                    @t.Body
+                }
+            </p>
+            <button type="button"
+                    class="toast-dismiss"
+                    data-testid="toast-dismiss"
+                    aria-label="Dismiss"
+                    @onclick="() => OnDismiss(t.Id)">×</button>
+        </article>
+    }
+</div>
+
+@code {
+    /// <summary>Local snapshot of the queue captured on every Changed event.</summary>
+    private IReadOnlyList<ToastItem> _snapshot = Array.Empty<ToastItem>();
+
+    /// <inheritdoc />
+    protected override void OnInitialized()
+    {
+        // Initial snapshot — covers the case where toasts arrived BEFORE the
+        // host component had a chance to subscribe (race during circuit start).
+        _snapshot = Queue.Snapshot();
+        Queue.Changed += OnQueueChanged;
+    }
+
+    /// <summary>
+    /// Refresh the snapshot and re-render. Marshalled onto the renderer's
+    /// synchronisation context so we can call <c>InvokeAsync</c> safely from
+    /// the polling callback thread.
+    /// </summary>
+    private void OnQueueChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            _snapshot = Queue.Snapshot();
+            StateHasChanged();
+        });
+    }
+
+    /// <summary>
+    /// Click handler for the dismiss button — removes the toast from the queue.
+    /// </summary>
+    /// <param name="toastId">Id of the toast to dismiss.</param>
+    private void OnDismiss(long toastId)
+    {
+        Queue.Dismiss(toastId);
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        Queue.Changed -= OnQueueChanged;
+    }
+}

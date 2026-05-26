@@ -1,0 +1,100 @@
+{{/*
+=============================================================================
+ConfigMap — non-secret API configuration.
+=============================================================================
+Every key here maps 1:1 to a binding path on the .NET side. The colon-
+delimited section path (Cnas:Observability:OtlpEndpoint) is encoded as a
+double-underscore env var name (Cnas__Observability__OtlpEndpoint) which is
+the conventional .NET configuration provider transform.
+
+What lives here vs. in the Secret:
+  * NON-SECRET → ConfigMap (this file): endpoints, retry counts, feature
+    flags, environment names, the OTel endpoint, MGov base URLs.
+  * SECRET     → api-secret.yaml: connection strings (contain passwords),
+    bearer tokens, mTLS PFX passwords, AES / HMAC keys.
+
+The split matters because Secrets are mounted with stricter RBAC than
+ConfigMaps and are typically logged differently (their values redacted).
+Misplacing a value in the wrong half is a security or operability bug.
+
+The chart only renders a representative subset of each Options surface.
+README.md "Configuration reference" enumerates every key that the .NET
+runtime understands; add new keys to this template as they get introduced.
+=============================================================================
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cnas-ps.apiConfigName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+data:
+  # --- ASP.NET runtime --------------------------------------------------
+  ASPNETCORE_ENVIRONMENT: {{ .Values.config.aspNetCoreEnvironment | quote }}
+  ASPNETCORE_URLS: "http://+:8080"
+  # Disable the dev-time diagnostic IDE attach hook in production.
+  DOTNET_RUNNING_IN_CONTAINER: "true"
+
+  # --- ObservabilityOptions (Cnas:Observability) ------------------------
+  Cnas__Observability__OtlpEndpoint: {{ .Values.config.observability.otlpEndpoint | quote }}
+  Cnas__Observability__ServiceName: {{ .Values.config.observability.serviceName | quote }}
+  Cnas__Observability__ServiceVersion: {{ .Values.config.observability.serviceVersion | quote }}
+  Cnas__Observability__Environment: {{ .Values.config.observability.environment | quote }}
+  Cnas__Observability__EnableConsoleExporter: {{ .Values.config.observability.enableConsoleExporter | quote }}
+
+  # --- RateLimitingOptions (Cnas:RateLimiting) --------------------------
+  # SEC 008 — 5 req/min anonymous, 200 req/min authenticated. The trust-
+  # forwarded-headers flag is meaningful ONLY when the Ingress controller
+  # is configured to rewrite X-Forwarded-For (see ingress.yaml comments).
+  Cnas__RateLimiting__Enabled: {{ .Values.config.rateLimiting.enabled | quote }}
+  Cnas__RateLimiting__TrustForwardedHeaders: {{ .Values.config.rateLimiting.trustForwardedHeaders | quote }}
+  Cnas__RateLimiting__Anonymous__PermitLimit: {{ .Values.config.rateLimiting.anonymousPermitLimit | quote }}
+  Cnas__RateLimiting__Anonymous__WindowSeconds: {{ .Values.config.rateLimiting.anonymousWindowSeconds | quote }}
+  Cnas__RateLimiting__Authenticated__PermitLimit: {{ .Values.config.rateLimiting.authenticatedPermitLimit | quote }}
+  Cnas__RateLimiting__Authenticated__WindowSeconds: {{ .Values.config.rateLimiting.authenticatedWindowSeconds | quote }}
+  Cnas__RateLimiting__Callback__PermitLimit: {{ .Values.config.rateLimiting.callbackPermitLimit | quote }}
+  Cnas__RateLimiting__Callback__WindowSeconds: {{ .Values.config.rateLimiting.callbackWindowSeconds | quote }}
+  Cnas__RateLimiting__Upload__PermitLimit: {{ .Values.config.rateLimiting.uploadPermitLimit | quote }}
+  Cnas__RateLimiting__Upload__WindowSeconds: {{ .Values.config.rateLimiting.uploadWindowSeconds | quote }}
+  Cnas__RateLimiting__GlobalConcurrencyLimit: {{ .Values.config.rateLimiting.globalConcurrencyLimit | quote }}
+  Cnas__RateLimiting__GlobalConcurrencyQueueLimit: {{ .Values.config.rateLimiting.globalConcurrencyQueueLimit | quote }}
+
+  # --- MGovResilienceOptions (Cnas:MGov:Resilience) ---------------------
+  # Representative subset for the msign client. The same shape repeats for
+  # mpay, mconnect, mnotify, mlog, mdocs, mconnect-events, mcabinet — add
+  # blocks here only when they need values OTHER than the defaults baked
+  # into MGovClientResilience.
+  Cnas__MGov__Resilience__Enabled: {{ .Values.config.mgovResilience.enabled | quote }}
+  Cnas__MGov__Resilience__Clients__msign__MaxRetries: {{ .Values.config.mgovResilience.msign.maxRetries | quote }}
+  Cnas__MGov__Resilience__Clients__msign__BaseDelayMs: {{ .Values.config.mgovResilience.msign.baseDelayMs | quote }}
+  Cnas__MGov__Resilience__Clients__msign__PerAttemptTimeoutMs: {{ .Values.config.mgovResilience.msign.perAttemptTimeoutMs | quote }}
+  Cnas__MGov__Resilience__Clients__msign__TotalPipelineTimeoutMs: {{ .Values.config.mgovResilience.msign.totalPipelineTimeoutMs | quote }}
+  Cnas__MGov__Resilience__Clients__msign__FailureRatio: {{ .Values.config.mgovResilience.msign.failureRatio | quote }}
+  Cnas__MGov__Resilience__Clients__msign__CircuitBreakerDurationSeconds: {{ .Values.config.mgovResilience.msign.circuitBreakerDurationSeconds | quote }}
+
+  # --- MGov base URLs (Cnas:MGov:*BaseUrl) ------------------------------
+  # Bearer tokens / mTLS PFX passwords are in the Secret, not here. Empty
+  # values disable the integration (the .NET adapters refuse to make HTTP
+  # calls when the base URL is empty — local-dev safety).
+  MGov__MPassIssuer: {{ .Values.config.mgov.mpassIssuer | quote }}
+  MGov__MPassClientId: {{ .Values.config.mgov.mpassClientId | quote }}
+  MGov__MSignBaseUrl: {{ .Values.config.mgov.msignBaseUrl | quote }}
+  MGov__MPayBaseUrl: {{ .Values.config.mgov.mpayBaseUrl | quote }}
+  MGov__MConnectBaseUrl: {{ .Values.config.mgov.mconnectBaseUrl | quote }}
+  MGov__MNotifyBaseUrl: {{ .Values.config.mgov.mnotifyBaseUrl | quote }}
+  MGov__MLogBaseUrl: {{ .Values.config.mgov.mlogBaseUrl | quote }}
+  MGov__MDocsBaseUrl: {{ .Values.config.mgov.mdocsBaseUrl | quote }}
+  MGov__MConnectEventsBaseUrl: {{ .Values.config.mgov.mconnectEventsBaseUrl | quote }}
+
+  # --- MCabinetOptions (Cnas:MCabinet) ----------------------------------
+  Cnas__MCabinet__BaseUrl: {{ .Values.config.mcabinet.baseUrl | quote }}
+  Cnas__MCabinet__SystemCode: {{ .Values.config.mcabinet.systemCode | quote }}
+
+  # --- MinioOptions (Minio:*) -------------------------------------------
+  # Endpoint defaults to the in-chart MinIO service when minio.enabled=true.
+  Minio__Endpoint: {{ default (printf "%s:%d" (include "cnas-ps.minioName" .) (int .Values.minio.apiPort)) .Values.config.minio.endpoint | quote }}
+  Minio__UseSsl: {{ .Values.config.minio.useSsl | quote }}
+  Minio__CitizenUploadsBucket: {{ .Values.config.minio.citizenUploadsBucket | quote }}
+  Minio__GeneratedDocumentsBucket: {{ .Values.config.minio.generatedDocumentsBucket | quote }}
+  Minio__MaxFileSizeBytes: {{ .Values.config.minio.maxFileSizeBytes | quote }}

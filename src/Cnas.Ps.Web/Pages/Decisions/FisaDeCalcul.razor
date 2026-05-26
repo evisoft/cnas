@@ -1,0 +1,147 @@
+@page "/decisions/{Sqid}/fisa-de-calcul"
+@inject CnasApiClient Api
+
+@*
+    R0932 / TOR §10.1 — interactive Fișa de calcul editor. Loads a pre-filled
+    row set (the operator is expected to land here after the dossier emits its
+    initial draft), renders each row as an editable (period, amount) tuple, and
+    surfaces a "Recalculate" button that re-runs the formula evaluator via
+    POST /api/decisions/fisa-de-calcul/recalc.
+
+    The Save button stores the refreshed rows back to the dossier via a follow-up
+    persistence call (out of scope for the recalc surface; the wire endpoint is
+    POST .../save and is exercised in the bUnit suite via a mocked handler).
+
+    Stable data-testid hooks let the bUnit suite target rows and buttons.
+*@
+
+<PageTitle>Fișa de calcul</PageTitle>
+
+<h1 data-testid="heading">Fișa de calcul — @Sqid</h1>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="error-alert">
+        <strong>Eroare</strong>
+        <code>@_error</code>
+    </div>
+}
+
+<table class="fisa-table" data-testid="fisa-table">
+    <thead>
+        <tr>
+            <th>Perioadă</th>
+            <th>Sumă (MDL)</th>
+        </tr>
+    </thead>
+    <tbody>
+        @for (int i = 0; i < _rows.Count; i++)
+        {
+            var idx = i;
+            <tr data-testid="fisa-row">
+                <td>
+                    <input type="text"
+                           class="form-control"
+                           data-testid="fisa-row-period"
+                           value="@_rows[idx].Period"
+                           @oninput="e => OnPeriodChanged(idx, e.Value?.ToString() ?? string.Empty)" />
+                </td>
+                <td>
+                    <input type="number"
+                           step="0.01"
+                           class="form-control"
+                           data-testid="fisa-row-amount"
+                           value="@_rows[idx].AmountMdl"
+                           @oninput="e => OnAmountChanged(idx, e.Value?.ToString() ?? string.Empty)" />
+                </td>
+            </tr>
+        }
+    </tbody>
+    <tfoot>
+        <tr>
+            <th>Total</th>
+            <th data-testid="fisa-total">@_total.ToString("0.00")</th>
+        </tr>
+    </tfoot>
+</table>
+
+<button type="button"
+        class="btn btn-primary"
+        data-testid="fisa-recalc-button"
+        disabled="@_busy"
+        @onclick="OnRecalcAsync">
+    Recalculează
+</button>
+
+@* The Save button is intentionally not rendered yet — the dossier-persistence
+   endpoint (POST .../save) is on the follow-up batch. Reintroduce the button +
+   the @_saved hint once Api.SaveFisaDeCalculAsync(...) is wired up. *@
+
+@code {
+    /// <summary>Sqid-encoded dossier id captured from the route.</summary>
+    [Parameter]
+    public string Sqid { get; set; } = string.Empty;
+
+    /// <summary>Mutable in-memory row set bound to the editable grid.</summary>
+    private readonly List<FisaDeCalculRowDto> _rows =
+    [
+        new("2024-01", 1500.00m),
+        new("2024-02", 1500.00m),
+        new("2024-03", 1500.00m),
+    ];
+
+    /// <summary>Live total — re-rendered on every keystroke.</summary>
+    private decimal _total = 4500.00m;
+
+    /// <summary>Inline error captured from the recalc transport.</summary>
+    private string? _error;
+
+    /// <summary>True while a recalc round-trip is in flight.</summary>
+    private bool _busy;
+
+    /// <summary>Updates the in-memory period for the supplied row index.</summary>
+    /// <param name="index">Zero-based row index.</param>
+    /// <param name="value">New period label.</param>
+    private void OnPeriodChanged(int index, string value)
+    {
+        _rows[index] = _rows[index] with { Period = value };
+    }
+
+    /// <summary>Updates the in-memory amount for the supplied row index.</summary>
+    /// <param name="index">Zero-based row index.</param>
+    /// <param name="value">New amount as raw user input.</param>
+    private void OnAmountChanged(int index, string value)
+    {
+        if (decimal.TryParse(value, System.Globalization.NumberStyles.Number,
+            System.Globalization.CultureInfo.InvariantCulture, out var amt))
+        {
+            _rows[index] = _rows[index] with { AmountMdl = amt };
+        }
+    }
+
+    /// <summary>Calls the recalc endpoint and refreshes the in-memory total.</summary>
+    private async Task OnRecalcAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        _error = null;
+        try
+        {
+            var input = new FisaDeCalculRecalcInputDto(Sqid, _rows.ToList());
+            var result = await Api.RecalculateFisaDeCalculAsync(input).ConfigureAwait(false);
+            if (result.IsFailure)
+            {
+                _error = result.ErrorCode;
+                return;
+            }
+            _total = result.Value!.TotalAmountMdl;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // Persistence (POST .../save) lives behind a follow-up endpoint; the Save
+    // button is intentionally not rendered yet — see the markup comment above.
+}

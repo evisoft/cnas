@@ -1,0 +1,171 @@
+@page "/dashboard"
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    Citizen dashboard. Requires an authenticated session — if the cascading session is
+    anonymous we redirect to the MPass login endpoint with a forceLoad.
+*@
+
+<PageTitle>@L["Nav.Dashboard"] · @L["App.Title"]</PageTitle>
+
+@if (!_session.IsAuthenticated)
+{
+    <p>@L["Common.Loading"]</p>
+}
+else if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="error-alert">
+        <strong>@L["Common.Error"]</strong>
+        <code>@_error</code>
+    </div>
+}
+else
+{
+    <h1 data-testid="greeting">@string.Format(System.Globalization.CultureInfo.CurrentCulture, L["Dashboard.Greeting"], _session.DisplayName)</h1>
+
+    <section class="kpis" aria-label="kpis">
+        <article class="kpi" data-testid="kpi-total">
+            <header>@L["Dashboard.KpiTotal"]</header>
+            <p class="value">@_total</p>
+        </article>
+        <article class="kpi" data-testid="kpi-underexam">
+            <header>@L["Dashboard.KpiUnderExam"]</header>
+            <p class="value">@_underExam</p>
+        </article>
+        <article class="kpi" data-testid="kpi-approved">
+            <header>@L["Dashboard.KpiApproved"]</header>
+            <p class="value">@_approved</p>
+        </article>
+    </section>
+
+    @* R0533 / R0534 / TOR CF 04.04-06 — aggregate KPI grid with deep-link anchors *@
+    @if (_snapshot is not null && _snapshot.KpiGrid.Count > 0)
+    {
+        <section class="kpi-grid" aria-label="kpi-grid" data-testid="kpi-grid">
+            @foreach (var cell in _snapshot.KpiGrid)
+            {
+                <article class="kpi" data-testid="@($"kpi-cell-{cell.Code}")">
+                    <header>@cell.Title</header>
+                    @if (!string.IsNullOrWhiteSpace(cell.DeepLinkUrl))
+                    {
+                        <p class="value">
+                            <a href="@cell.DeepLinkUrl"
+                               data-testid="@($"kpi-link-{cell.Code}")">@cell.Value</a>
+                        </p>
+                    }
+                    else
+                    {
+                        <p class="value">@cell.Value</p>
+                    }
+                </article>
+            }
+        </section>
+    }
+
+    @* R0534 / TOR CF 04.05-06 — widget tiles, hyperlinked when the producer set DeepLinkUrl *@
+    @if (_snapshot is not null && _snapshot.Widgets.Count > 0)
+    {
+        <section class="widgets" aria-label="widgets" data-testid="widget-grid">
+            @foreach (var widget in _snapshot.Widgets)
+            {
+                <article class="kpi" data-testid="@($"widget-{widget.Code}")">
+                    <header>@widget.Title</header>
+                    @if (!string.IsNullOrWhiteSpace(widget.DeepLinkUrl))
+                    {
+                        <p class="value">
+                            <a href="@widget.DeepLinkUrl"
+                               data-testid="@($"widget-link-{widget.Code}")">@widget.Value</a>
+                        </p>
+                    }
+                    else
+                    {
+                        <p class="value">@widget.Value</p>
+                    }
+                </article>
+            }
+        </section>
+    }
+
+    <section class="recent" aria-label="recent">
+        <h2>@L["Dashboard.RecentList"]</h2>
+        @if (_recent is null || _recent.Count == 0)
+        {
+            <p>@L["Common.None"]</p>
+        }
+        else
+        {
+            <ul>
+                @foreach (var item in _recent)
+                {
+                    <li>
+                        <a href="@($"/applications/{item.Id}")">@(item.ReferenceNumber ?? item.Id)</a>
+                        — @item.Status
+                    </li>
+                }
+            </ul>
+        }
+    </section>
+}
+
+@code {
+    /// <summary>Authenticated session cascaded by <c>MainLayout</c>.</summary>
+    [CascadingParameter(Name = "Session")]
+    public UserSession Session { get; set; } = UserSession.Anonymous;
+
+    /// <summary>Local non-nullable copy used inside the markup.</summary>
+    private UserSession _session = UserSession.Anonymous;
+
+    /// <summary>Recent applications (first 5).</summary>
+    private IReadOnlyList<ApplicationListItemOutput>? _recent;
+
+    /// <summary>KPI: total applications submitted by the caller.</summary>
+    private long _total;
+
+    /// <summary>KPI: applications currently under examination.</summary>
+    private int _underExam;
+
+    /// <summary>KPI: applications with status Approved.</summary>
+    private int _approved;
+
+    /// <summary>Error-code surfaced when the API rejects the request.</summary>
+    private string? _error;
+
+    /// <summary>
+    /// R0533 / R0534 — full dashboard snapshot (widgets + KPI grid) fetched on
+    /// initialisation. <c>null</c> while in flight; remains <c>null</c> when the
+    /// auxiliary call fails (the page still renders).
+    /// </summary>
+    private DashboardSnapshotDto? _snapshot;
+
+    /// <inheritdoc />
+    protected override async Task OnInitializedAsync()
+    {
+        _session = Session;
+        if (!_session.IsAuthenticated)
+        {
+            Navigation.NavigateTo("/api/auth/login", forceLoad: true);
+            return;
+        }
+
+        var apps = await Api.GetMyApplicationsAsync(page: 1, pageSize: 5).ConfigureAwait(false);
+        if (apps.IsFailure)
+        {
+            _error = apps.ErrorCode;
+            return;
+        }
+        _recent = apps.Value.Items;
+        _total = apps.Value.TotalCount;
+        _underExam = _recent.Count(x => string.Equals(x.Status, "UnderExamination", StringComparison.OrdinalIgnoreCase));
+        _approved = _recent.Count(x => string.Equals(x.Status, "Approved", StringComparison.OrdinalIgnoreCase));
+
+        // R0533 / R0534 — auxiliary snapshot fetch. Failure is non-fatal; we surface
+        // the legacy KPI tiles either way.
+        var snapshot = await Api.GetDashboardSnapshotAsync().ConfigureAwait(false);
+        if (snapshot.IsSuccess)
+        {
+            _snapshot = snapshot.Value;
+        }
+    }
+}

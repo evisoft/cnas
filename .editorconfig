@@ -1,0 +1,74 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{yml,yaml,json,csproj,props,targets}]
+indent_size = 2
+
+[*.{md,markdown}]
+trim_trailing_whitespace = false
+
+[*.cs]
+# Code style
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+# Naming
+dotnet_naming_rule.interface_should_be_begins_with_i.severity = error
+dotnet_naming_rule.interface_should_be_begins_with_i.symbols  = interfaces
+dotnet_naming_rule.interface_should_be_begins_with_i.style    = begins_with_i
+dotnet_naming_symbols.interfaces.applicable_kinds = interface
+dotnet_naming_style.begins_with_i.required_prefix = I
+dotnet_naming_style.begins_with_i.capitalization  = pascal_case
+
+dotnet_naming_rule.async_methods_end_in_async.severity = warning
+dotnet_naming_rule.async_methods_end_in_async.symbols  = async_methods
+dotnet_naming_rule.async_methods_end_in_async.style    = end_in_async
+dotnet_naming_symbols.async_methods.applicable_kinds = method
+dotnet_naming_symbols.async_methods.required_modifiers = async
+dotnet_naming_style.end_in_async.required_suffix = Async
+dotnet_naming_style.end_in_async.capitalization  = pascal_case
+
+# Private fields prefixed with _
+dotnet_naming_rule.private_fields_begin_with_underscore.severity = warning
+dotnet_naming_rule.private_fields_begin_with_underscore.symbols  = private_fields
+dotnet_naming_rule.private_fields_begin_with_underscore.style    = underscore_camel
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_style.underscore_camel.required_prefix = _
+dotnet_naming_style.underscore_camel.capitalization  = camel_case
+
+# Quality enforcement
+dotnet_diagnostic.CS1591.severity = warning   # Missing XML — warning in src, error in CI
+dotnet_diagnostic.CA1303.severity = none      # Localization warning — irrelevant for back-end
+dotnet_diagnostic.CA2007.severity = none      # ConfigureAwait — not needed in ASP.NET Core
+dotnet_diagnostic.IDE0058.severity = none     # Expression value never used
+dotnet_diagnostic.CA1000.severity = none      # Result<T>.Success/Failure factory pattern is intentional
+dotnet_diagnostic.CA1062.severity = none      # Nullable reference types already enforce non-null contracts
+dotnet_diagnostic.CA1054.severity = none      # URI parameters as string — pragmatic for DTOs/config
+dotnet_diagnostic.CA1056.severity = none      # URI properties as string — pragmatic for DTOs/config
+dotnet_diagnostic.CA1716.severity = none      # Reserved language keywords — domain language is Romanian
+dotnet_diagnostic.CA1819.severity = none      # Properties returning arrays — fine for DTOs
+dotnet_diagnostic.CA2227.severity = none      # Collection setters — DTOs need writable collections for deserialization
+dotnet_diagnostic.CA1031.severity = none      # Catch generic exception — used in cross-cutting handlers
+dotnet_diagnostic.S1135.severity = none       # SonarAnalyzer TODO warning — TODOs are tracked in TODO.md
+dotnet_diagnostic.CA1848.severity = none      # LoggerMessage delegate optimisation — not worth the boilerplate here
+dotnet_diagnostic.CA1873.severity = none      # Lazy formatting argument check — overlaps with CA1848
+dotnet_diagnostic.CA1014.severity = none      # CLSCompliant assembly attribute — not needed
+dotnet_diagnostic.CA1304.severity = none      # CultureInfo on string ops — invariant by default in our code
+dotnet_diagnostic.CA1305.severity = none      # IFormatProvider — invariant by default
+dotnet_diagnostic.CA1310.severity = none      # StringComparison — Ordinal by default
+dotnet_diagnostic.CA1311.severity = none      # ToUpper/ToLower culture — we use Invariant
+dotnet_diagnostic.CA1860.severity = none      # Use Length/Count instead of Any() — readability preference
+dotnet_diagnostic.CA1812.severity = none      # Internal classes that appear uninstantiated — DI handles them
+dotnet_diagnostic.CA1859.severity = none      # Use concrete types — interface-first design preferred
+dotnet_diagnostic.CA1849.severity = none      # Sync method in async context — pragmatic for short-circuit branches
+dotnet_diagnostic.CA1822.severity = none      # Mark members as static — DI hooks need instance methods
+dotnet_diagnostic.CA1816.severity = none      # SuppressFinalize on Dispose — not needed for sealed disposables
+dotnet_diagnostic.CA1711.severity = none      # Type-name suffixes (Impl, Stub) — used to disambiguate from namespace

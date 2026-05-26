@@ -1,0 +1,126 @@
+# Technical integration specifications
+
+> Anchored to TOR ID(s): R2423 (Deliverable 3.1, Milestone M3). Companion to
+> [`../EGOV-INTEGRATION-GAP.md`](../EGOV-INTEGRATION-GAP.md) which carries the
+> protocol-level gap audit. Pointers below reference actual implementation
+> files. Iteration 100.
+
+## 1. Purpose / scope
+
+Catalog every external system SI „Protecția Socială" speaks to via MGov
+MEGA, the contract each touchpoint observes, and the code surface that
+implements it. Used by integration analysts, the supplier integration
+team, and CNAS counterparts during bilateral acceptance of the M3
+deliverable.
+
+Scope = MGov MSuite (`MPass`, `MSign`, `MNotify`, `MConnect`, `MPay`,
+`MCloud`) plus the 11 typed external-IS facades under
+`src/Cnas.Ps.Application/External/` (RSP, RSUD, SFS, SiSfs, SIVE,
+SIA-AS, SIA-ISS, SIDDCM, PCCM, ECMnd, EESSI) and `IFmsClient`.
+
+## 2. Audience / stakeholders
+
+Supplier integration leads, CNAS integration owners, MGov service
+desks, and the joint architecture-review board that signs the
+Deliverable 3.3 protocol (R2425).
+
+## 3. Touchpoint-by-touchpoint specification
+
+### 3.1 MPass — SSO / identity
+
+| Property | Value |
+|---|---|
+| Abstraction | `IMPassClient` / `ISamlAssertionParser` |
+| Adapter | `src/Cnas.Ps.Infrastructure/MGov/MPassSamlAssertionParser.cs` |
+| Auth wiring | `src/Cnas.Ps.Api/Composition/AuthenticationComposition.cs` |
+| Direction | Inbound: SAML 2.0 HTTP-POST → ASP.NET Core auth cookie |
+| Status | Skeleton present; OIDC→SAML refactor tracked in EGOV-INTEGRATION-GAP §MPass |
+
+### 3.2 MSign — qualified e-signature
+
+| Property | Value |
+|---|---|
+| Abstraction | `IMSignClient` |
+| Adapter | `src/Cnas.Ps.Infrastructure/MGov/MSignClient.cs` |
+| Direction | Two-phase: `PostSignRequest` (SOAP) → browser redirect → `GetSignResponse` |
+| Consumer | `DocumentGenerationService` (decision/order signing) |
+| Status | REST stub; SOAP/WS-I refactor tracked in EGOV-INTEGRATION-GAP §MSign |
+
+### 3.3 MNotify — multi-channel dispatch
+
+| Property | Value |
+|---|---|
+| Abstraction | `IMNotifyClient` |
+| Adapter | `src/Cnas.Ps.Infrastructure/MGov/MNotifyClient.cs` |
+| Direction | Outbound POST `/api/Notification` (REST/JSON) |
+| Auth | X.509 client certificate (`ClientCertificateHttpHandler`) |
+| Status | Endpoint shape + payload refactor tracked in EGOV-INTEGRATION-GAP §MNotify |
+
+### 3.4 MConnect — service bus + CloudEvents
+
+| Property | Value |
+|---|---|
+| Sync abstraction | `IMConnectClient` (synchronous queries) |
+| Async abstractions | `MConnectEventsProducer` / `MConnectEventsConsumer` |
+| Adapters | `src/Cnas.Ps.Infrastructure/MGov/MConnectClient.cs`, `MConnectEventsProducer.cs`, `MConnectEventsConsumer.cs` |
+| Direction | Bi-directional — gov registries inbound + outbound notifications |
+| Status | Per-system NDA gating; CloudEvents transport pending |
+
+### 3.5 MPay — payment orchestration
+
+| Property | Value |
+|---|---|
+| Abstraction | `IMPayClient` |
+| Adapter | `src/Cnas.Ps.Infrastructure/MGov/MPayClient.cs` |
+| Direction | Outbound SOAP + WS-Security; inbound REST callbacks (`GetOrderDetails`, `ConfirmOrderPayment`) |
+| Status | SOAP envelope + XML-DSig refactor tracked in EGOV-INTEGRATION-GAP §MPay |
+
+### 3.6 MCloud — open-data publication
+
+| Property | Value |
+|---|---|
+| Abstraction | `IMCabinetPublisher` (and MCloud open-data publisher stub) |
+| Adapter | `src/Cnas.Ps.Infrastructure/MGov/MCabinetPublisher.cs` |
+| Direction | Outbound (CKAN-style upload of anonymised datasets — DAT 042) |
+| Status | Catalogue endpoints + payload schema bilateral |
+
+## 4. Acceptance criteria / sign-off
+
+1. Each touchpoint above is documented in this file with a stable
+   abstraction name and a concrete adapter path.
+2. Each row reconciles with the gap-audit row in
+   [`../EGOV-INTEGRATION-GAP.md`](../EGOV-INTEGRATION-GAP.md).
+3. The integration architecture review board signs this document as
+   the M3 Deliverable 3.1 reference.
+4. R2425 (Deliverable 3.3 — bilateral interop acceptance protocol) is
+   completed for each touchpoint with a green sign-off from the
+   counterpart system owner.
+
+## 5. Implementation map
+
+| Surface | Path |
+|---|---|
+| MGov client abstractions | `src/Cnas.Ps.Application/Abstractions/MGovClients.cs` |
+| MGov HTTP plumbing | `src/Cnas.Ps.Infrastructure/MGov/MGovHttp.cs` |
+| MGov resilience policies | `src/Cnas.Ps.Infrastructure/MGov/MGovResilienceExtensions.cs` |
+| mTLS handler | `src/Cnas.Ps.Infrastructure/MGov/ClientCertificateHttpHandler.cs` |
+| External IS facades | `src/Cnas.Ps.Application/External/` |
+
+## 6. Status / open gaps
+
+- MPass SAML, MSign SOAP, MPay SOAP+WS-Sec — protocol-level refactor
+  pending (see [`../EGOV-INTEGRATION-GAP.md`](../EGOV-INTEGRATION-GAP.md)).
+- MConnect CloudEvents transport not yet wired.
+- External-IS facades (R2421) gated by per-system NDA contracts.
+- FMS facade (R2422) gated externally.
+- Exposed API spec doc (R2424) — OpenAPI is generated by `MapOpenApi`;
+  the standalone Annex-4 spec document is pending.
+- Interop acceptance protocol per touchpoint (R2425) pending.
+
+## 7. References
+
+- TOR §3.4 Integration
+- [`../EGOV-INTEGRATION-GAP.md`](../EGOV-INTEGRATION-GAP.md)
+- [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+- [`../pm/sdd-iterative.md`](../pm/sdd-iterative.md) (SDD layering)
+- TODO.md rows R2420 – R2425

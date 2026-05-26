@@ -1,0 +1,226 @@
+/* =============================================================================
+ * HG 677/2025 — Modelul Unitar de Design / Republic of Moldova unified design
+ * tokens for digital government services.
+ *
+ * File version: 1.0.0 (R0221 — TOR UI 016)
+ * Authority   : Hotărârea Guvernului nr. 677/2025
+ * Scope       : Citizen-portal Blazor WASM (Cnas.Ps.Web).
+ *
+ * This file declares the CANONICAL design tokens — colours, typography, spacing,
+ * radius, shadows, and z-index — as CSS custom properties on the :root selector.
+ * Every Blazor page and component MUST consume these tokens via var(--cnas-*)
+ * rather than hard-coding values, so theme tuning and dark-mode work without
+ * per-page edits.
+ *
+ * NOTE: The specific HEX values below are an INTERIM palette pending the parsed
+ * HG 677/2025 PDF reference (deferred to a follow-up batch). They are based on
+ * the existing Moldovan e-Government deep-blue + neutral-grey scheme and meet
+ * WCAG 2.1 AA contrast (4.5:1 body, 3:1 large text) when paired per the
+ * recommendations in docs/design-system.md.
+ *
+ * Light mode is the default. The @media (prefers-color-scheme: dark) block at
+ * the bottom overrides the colour scales for dark mode (HG 677 + R0223 require
+ * WCAG AA contrast in BOTH modes).
+ * ========================================================================== */
+
+:root {
+    /* -------------------------------------------------------------------------
+     * COLOUR — Primary (deep blue, MD national identity)
+     * 50/100 = backgrounds, 300 = subtle accents, 500 = brand default,
+     * 700 = hover/active, 900 = strongest contrast text/heading.
+     * ------------------------------------------------------------------------- */
+    --cnas-color-primary-50:  #e6eef7;
+    --cnas-color-primary-100: #cddde0; /* light tint, headers on dark bg */
+    --cnas-color-primary-200: #99b8d1;
+    --cnas-color-primary-300: #6695c2;
+    --cnas-color-primary-400: #3372b3;
+    --cnas-color-primary-500: #003b73; /* brand baseline */
+    --cnas-color-primary-600: #002f5c;
+    --cnas-color-primary-700: #002445;
+    --cnas-color-primary-800: #001a30;
+    --cnas-color-primary-900: #00101f;
+
+    /* -------------------------------------------------------------------------
+     * COLOUR — Secondary (warm gold, MD flag accent)
+     * Used sparingly: focus rings, key call-to-action highlight only.
+     * ------------------------------------------------------------------------- */
+    --cnas-color-secondary-50:  #fff8e1;
+    --cnas-color-secondary-100: #ffecb3;
+    --cnas-color-secondary-300: #ffd54f;
+    --cnas-color-secondary-500: #ffd200; /* gold, MD flag accent */
+    --cnas-color-secondary-700: #c79a00;
+    --cnas-color-secondary-900: #7a5e00;
+
+    /* -------------------------------------------------------------------------
+     * COLOUR — Semantic (success / warning / danger / info)
+     * Tuned to WCAG AA on white background at 500 stop.
+     * ------------------------------------------------------------------------- */
+    --cnas-color-success-50:  #e8f5e9;
+    --cnas-color-success-500: #2e7d32;
+    --cnas-color-success-700: #1b5e20;
+
+    --cnas-color-warning-50:  #fff8e1;
+    --cnas-color-warning-500: #b26a00;
+    --cnas-color-warning-700: #804b00;
+
+    --cnas-color-danger-50:   #fdecea;
+    --cnas-color-danger-500:  #c62828;
+    --cnas-color-danger-700:  #8e0000;
+
+    --cnas-color-info-50:     #e3f2fd;
+    --cnas-color-info-500:    #1565c0;
+    --cnas-color-info-700:    #0d47a1;
+
+    /* -------------------------------------------------------------------------
+     * COLOUR — Neutrals (page surface, borders, body text)
+     * 0 = pure white, 1000 = near-black for high-contrast text.
+     * ------------------------------------------------------------------------- */
+    --cnas-color-neutral-0:    #ffffff;
+    --cnas-color-neutral-50:   #fafafa;
+    --cnas-color-neutral-100:  #f5f5f5;
+    --cnas-color-neutral-200:  #eeeeee;
+    --cnas-color-neutral-300:  #e0e0e0;
+    --cnas-color-neutral-400:  #bdbdbd;
+    --cnas-color-neutral-500:  #9e9e9e;
+    --cnas-color-neutral-600:  #757575;
+    --cnas-color-neutral-700:  #616161;
+    --cnas-color-neutral-800:  #424242;
+    --cnas-color-neutral-900:  #212121;
+    --cnas-color-neutral-1000: #0f172a;
+
+    /* -------------------------------------------------------------------------
+     * TYPOGRAPHY
+     * Sans-serif baseline (system stack) for interactive UI;
+     * serif reserved for legal documents / printable forms.
+     * ------------------------------------------------------------------------- */
+    --cnas-font-family-sans:  system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --cnas-font-family-serif: Georgia, "Times New Roman", Times, serif;
+
+    /* Modular type scale (1.250 ratio) — base 16 px. */
+    --cnas-font-size-xs:   0.75rem;  /* 12 px — captions, helper text */
+    --cnas-font-size-sm:   0.875rem; /* 14 px — small body */
+    --cnas-font-size-base: 1rem;     /* 16 px — body */
+    --cnas-font-size-lg:   1.125rem; /* 18 px — emphasised body */
+    --cnas-font-size-xl:   1.25rem;  /* 20 px — H4 */
+    --cnas-font-size-2xl:  1.5rem;   /* 24 px — H3 */
+    --cnas-font-size-3xl:  1.875rem; /* 30 px — H2 / H1 */
+
+    --cnas-line-height-tight:   1.2;
+    --cnas-line-height-normal:  1.5;
+    --cnas-line-height-relaxed: 1.75;
+
+    --cnas-font-weight-regular: 400;
+    --cnas-font-weight-medium:  500;
+    --cnas-font-weight-bold:    700;
+
+    /* -------------------------------------------------------------------------
+     * SPACING — 4 px base scale
+     * Steps named by multiples of the base unit so layout maths stays predictable.
+     * ------------------------------------------------------------------------- */
+    --cnas-space-0:  0;
+    --cnas-space-1:  0.25rem;  /*  4 px */
+    --cnas-space-2:  0.5rem;   /*  8 px */
+    --cnas-space-3:  0.75rem;  /* 12 px */
+    --cnas-space-4:  1rem;     /* 16 px */
+    --cnas-space-5:  1.25rem;  /* 20 px */
+    --cnas-space-6:  1.5rem;   /* 24 px */
+    --cnas-space-8:  2rem;     /* 32 px */
+    --cnas-space-10: 2.5rem;   /* 40 px */
+    --cnas-space-12: 3rem;     /* 48 px */
+    --cnas-space-16: 4rem;     /* 64 px */
+    --cnas-space-20: 5rem;     /* 80 px */
+    --cnas-space-24: 6rem;     /* 96 px */
+
+    /* -------------------------------------------------------------------------
+     * BORDER RADIUS
+     * "full" gives circular pills; "none" is for sharp edges (mostly tables/cards).
+     * ------------------------------------------------------------------------- */
+    --cnas-radius-none: 0;
+    --cnas-radius-sm:   0.125rem; /* 2 px  — inputs, small buttons */
+    --cnas-radius-md:   0.25rem;  /* 4 px  — default */
+    --cnas-radius-lg:   0.5rem;   /* 8 px  — cards, modals */
+    --cnas-radius-full: 9999px;
+
+    /* -------------------------------------------------------------------------
+     * SHADOWS — Elevation
+     * Low-contrast neutral shadow so they remain subtle in both light/dark modes.
+     * ------------------------------------------------------------------------- */
+    --cnas-shadow-none: none;
+    --cnas-shadow-sm:   0 1px 2px rgba(15, 23, 42, 0.08);
+    --cnas-shadow-md:   0 2px 6px rgba(15, 23, 42, 0.12);
+    --cnas-shadow-lg:   0 8px 24px rgba(15, 23, 42, 0.16);
+
+    /* -------------------------------------------------------------------------
+     * Z-INDEX scale
+     * Named tiers prevent stacking-context arms-races between components.
+     * ------------------------------------------------------------------------- */
+    --cnas-z-base:     0;
+    --cnas-z-dropdown: 1000;
+    --cnas-z-sticky:   1100;
+    --cnas-z-modal:    1300;
+    --cnas-z-toast:    1400;
+
+    /* -------------------------------------------------------------------------
+     * BREAKPOINTS — TOR UI 005-006 / R0222
+     *
+     * Reference-only tokens. CSS Custom Properties CANNOT be used inside
+     * @media query conditions (the spec resolves the query parameters before
+     * cascade resolves variables), so real @media rules in component CSS MUST
+     * hard-code these literal pixel values. Keeping the values here as the
+     * Single Source of Truth means:
+     *   - cnas-responsive.css and any future component sheet share one scale;
+     *   - the design-system docs reference these tokens by name;
+     *   - the architecture test ResponsiveBreakpointsTests pins their presence.
+     *
+     * Baseline viewport for SI Protecția Socială citizen portal: 1360 × 768
+     * (HG 677/2025 + TOR UI 005-006). Pages MUST be usable at this size with
+     * no horizontal scroll, in both LTR (ro/ru) and RTL-ready layouts.
+     * ------------------------------------------------------------------------- */
+    --cnas-bp-sm:  640px;   /* small phones landscape / large phones portrait */
+    --cnas-bp-md:  768px;   /* tablet portrait                                 */
+    --cnas-bp-lg:  1024px;  /* tablet landscape / small laptop                 */
+    --cnas-bp-xl:  1360px;  /* BASELINE — desktop, citizen portal target       */
+    --cnas-bp-2xl: 1920px;  /* full HD desktop / wide monitor                  */
+}
+
+/* =============================================================================
+ * Dark mode override
+ *
+ * HG 677/2025 + WCAG 2.1 AA (per R0223) require contrast in both colour schemes.
+ * We invert the neutral scale and shift the primary brand to a lighter stop so
+ * 4.5:1 body / 3:1 large text still holds.
+ * ========================================================================== */
+@media (prefers-color-scheme: dark) {
+    :root {
+        /* Lighten primary so it remains readable on dark surfaces. */
+        --cnas-color-primary-50:  #001a30;
+        --cnas-color-primary-100: #002445;
+        --cnas-color-primary-200: #002f5c;
+        --cnas-color-primary-300: #003b73;
+        --cnas-color-primary-400: #3372b3;
+        --cnas-color-primary-500: #6695c2; /* dark-mode brand baseline */
+        --cnas-color-primary-600: #99b8d1;
+        --cnas-color-primary-700: #cddde0;
+        --cnas-color-primary-800: #e6eef7;
+        --cnas-color-primary-900: #f5f9ff;
+
+        /* Invert neutrals: page surface becomes dark, text becomes near-white. */
+        --cnas-color-neutral-0:    #0f172a;
+        --cnas-color-neutral-50:   #1a202c;
+        --cnas-color-neutral-100:  #212121;
+        --cnas-color-neutral-200:  #424242;
+        --cnas-color-neutral-300:  #616161;
+        --cnas-color-neutral-400:  #757575;
+        --cnas-color-neutral-500:  #9e9e9e;
+        --cnas-color-neutral-600:  #bdbdbd;
+        --cnas-color-neutral-700:  #e0e0e0;
+        --cnas-color-neutral-800:  #eeeeee;
+        --cnas-color-neutral-900:  #f5f5f5;
+        --cnas-color-neutral-1000: #ffffff;
+
+        /* Slightly stronger shadows so elevation reads on dark surfaces. */
+        --cnas-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40);
+        --cnas-shadow-md: 0 2px 6px rgba(0, 0, 0, 0.48);
+        --cnas-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.56);
+    }
+}

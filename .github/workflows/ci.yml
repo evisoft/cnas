@@ -1,0 +1,553 @@
+# Purpose:
+#   Continuous integration pipeline for the CNAS Social Protection Information System.
+#   Implements CLAUDE.md Phase 4 stages 1-7 (restore -> format -> build -> test+coverage ->
+#   coverage gate -> SAST -> publish artifacts). Enforces TreatWarningsAsErrors via the
+#   default build (the property is already set in Directory.Build.props).
+#
+# When:
+#   - On every pull_request (any base branch). Stages 1-6 run; artifact publishing is
+#     skipped because PRs should not produce immutable artifacts.
+#   - On every push to main. All stages including artifact publishing run.
+#
+# Cardinal rules applied:
+#   - Every action is pinned to a major version (no @main / @master / @latest).
+#   - Each job declares its own least-privilege permissions block; we do not rely on
+#     repository-wide default token scope.
+#   - No secrets are committed -- referenced by name only when actually needed.
+#   - Concurrency control cancels superseded runs on the same ref.
+
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - "**"
+  push:
+    branches:
+      - main
+
+# Workflow-level permissions: read by default. Individual jobs widen as needed.
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+# Cancel any in-flight CI run for the same ref when a new commit arrives.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: "10.x"
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  # CI=true is consumed by Directory.Build.props to enable ContinuousIntegrationBuild.
+  CI: "true"
+  SOLUTION: "Cnas.Ps.slnx"
+  # Coverage gate: ratcheted from 80 → 85 in iter-143 (R2702). The TOR target is 90% line
+  # coverage (UAT 005); we step through 85 first to detect any unrelated drift before the
+  # final 90% bump. Do NOT lower this back below 85 without an explicit ratchet-relaxation
+  # decision in TODO.md — quality bar only goes up (CLAUDE.md cross-cutting principles).
+  COVERAGE_THRESHOLD: "85"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 2: Format check -- fast (~30s), runs in parallel with build.
+  # ---------------------------------------------------------------------------
+  format-check:
+    name: Format check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies (required by dotnet format)
+        run: dotnet restore ${{ env.SOLUTION }}
+
+      - name: Verify formatting
+        # --verify-no-changes makes dotnet format exit non-zero when changes would be applied.
+        # --no-restore avoids redundant work; restore already ran above.
+        run: dotnet format ${{ env.SOLUTION }} --verify-no-changes --no-restore
+
+  # ---------------------------------------------------------------------------
+  # Stage 3: Build (warnings-as-errors enforced by Directory.Build.props).
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (Release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.SOLUTION }}
+
+      - name: Restore local .NET tools
+        # Restores the local tool manifest (`.config/dotnet-tools.json`).
+        # Currently provides `husky` for contributors; CI does not invoke it directly,
+        # but the restore keeps the manifest validated and matches the documented
+        # contributor setup (`dotnet tool restore && dotnet husky install`).
+        run: dotnet tool restore
+
+      - name: Build solution
+        # TreatWarningsAsErrors is on in Directory.Build.props, so the compiler enforces
+        # the "Stage 3 fails on compiler warnings" gate without any extra flags here.
+        run: dotnet build ${{ env.SOLUTION }} --no-restore --configuration Release
+
+  # ---------------------------------------------------------------------------
+  # Stage 4: Test + coverage. Depends on build so that build errors surface first.
+  # E2E project is excluded -- Playwright needs browser dependencies that are not
+  # part of the unit/integration CI lane.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (unit + integration)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.SOLUTION }}
+
+      - name: Build solution
+        run: dotnet build ${{ env.SOLUTION }} --no-restore --configuration Release
+
+      - name: Run tests with coverage
+        # Skip E2E tests (Playwright -- handled by a separate browser-equipped pipeline).
+        # TRX logger produces consumable test results; XPlat Code Coverage emits Cobertura
+        # files in TestResults/<guid>/coverage.cobertura.xml which the coverage-gate job parses.
+        # --settings coverlet.runsettings applies the central exclusion list (EF migrations,
+        # *.Designer.cs, *.Generated.cs, GlobalUsings.g.cs) so the 80% gate measures only
+        # the code we author. Without it, every new migration silently drops the denominator
+        # by thousands of generated lines and forces a fake-ratchet correction.
+        run: |
+          dotnet test ${{ env.SOLUTION }} \
+            --no-build \
+            --configuration Release \
+            --logger trx \
+            --collect:"XPlat Code Coverage" \
+            --settings coverlet.runsettings \
+            --results-directory ./TestResults \
+            --filter "FullyQualifiedName!~Cnas.Ps.E2E"
+
+      - name: Upload TRX test results
+        # always() so we still capture results when tests fail -- diagnostics over green builds.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-trx
+          path: ./TestResults/**/*.trx
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload coverage artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-cobertura
+          path: ./TestResults/**/coverage.cobertura.xml
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Stage 4b: Helm chart lint + render. Validates the operator-facing
+  # `ops/k8s/cnas-ps` chart on every PR. Chart breakage must block release
+  # artefacts in the same way that test failures do, so this job is wired in
+  # as a `needs:` dependency of coverage-gate and publish-artifact below.
+  #
+  # Cardinal rules:
+  #   * Warnings count as failures (CLAUDE.md treats warnings-as-errors).
+  #   * Every overlay (default + values.staging.yaml + values.production.yaml)
+  #     is linted AND rendered so that an override file that breaks the
+  #     templates cannot land silently.
+  #   * The chart's own landmark-string assertion harness (test/render.sh)
+  #     is also executed; if helm is missing the script self-exits 0, but
+  #     we install helm explicitly here so a missed install would be loud.
+  #
+  # Path filtering note: we deliberately run on every PR (no `paths:`
+  # filter). The lint + render finishes in well under a minute; gating the
+  # job on path changes would risk skipping when a workflow edit or a
+  # cross-cutting refactor touches both .cs and chart files in the same PR.
+  # ---------------------------------------------------------------------------
+  helm-lint:
+    name: Helm chart lint & render
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # Least privilege: only needs to read the repository contents.
+      contents: read
+    env:
+      CHART_DIR: ops/k8s/cnas-ps
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        # Pinned to the action's v4 major. The `version` input controls the
+        # Helm CLI binary; we pin it to a known-good 3.x line rather than
+        # `latest` so a future Helm-4 GA cannot silently upgrade the CI lane.
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Helm lint (default values)
+        # `helm lint` exits non-zero on errors. Warnings only become an
+        # error when --strict is passed, which is exactly the behaviour
+        # CLAUDE.md mandates (warnings-as-errors throughout).
+        run: helm lint "$CHART_DIR" --strict
+
+      - name: Helm lint (staging overlay)
+        # Each environment overlay can subtly change schema-shape; lint
+        # every overlay file the chart ships with.
+        run: helm lint "$CHART_DIR" --strict -f "$CHART_DIR/values.staging.yaml"
+
+      - name: Helm lint (production overlay)
+        run: helm lint "$CHART_DIR" --strict -f "$CHART_DIR/values.production.yaml"
+
+      - name: Helm template (default) | kubectl dry-run
+        # `helm lint` does not detect every manifest-shape error -- e.g.
+        # invalid apiVersion / kind combinations or duplicate object names.
+        # Piping into `kubectl --dry-run=client` catches those because the
+        # client-side validator understands the full schema. kubectl is
+        # pre-installed on ubuntu-latest runners.
+        # `image.tag` and `ingress.host` are required values for this chart
+        # (see _helpers.tpl::validateRequired); we supply test values to let
+        # the template engine succeed.
+        run: |
+          helm template release-ci "$CHART_DIR" \
+            --set image.tag=ci-test \
+            --set ingress.host=ci.example.gov.md \
+            | kubectl apply --dry-run=client -f -
+
+      - name: Helm template (staging overlay) | kubectl dry-run
+        run: |
+          helm template release-ci "$CHART_DIR" \
+            -f "$CHART_DIR/values.staging.yaml" \
+            --set image.tag=ci-test \
+            | kubectl apply --dry-run=client -f -
+
+      - name: Helm template (production overlay) | kubectl dry-run
+        run: |
+          helm template release-ci "$CHART_DIR" \
+            -f "$CHART_DIR/values.production.yaml" \
+            --set image.tag=ci-test \
+            | kubectl apply --dry-run=client -f -
+
+      - name: Run chart landmark-string assertion harness
+        # render.sh already exits non-zero on any missing landmark. We
+        # invoke it via bash explicitly so the script's executable bit
+        # (or lack thereof on Windows checkouts) is irrelevant.
+        run: bash "$CHART_DIR/test/render.sh"
+
+  # ---------------------------------------------------------------------------
+  # Stage 5: Coverage gate. Asserts line coverage >= COVERAGE_THRESHOLD.
+  # ---------------------------------------------------------------------------
+  coverage-gate:
+    name: Coverage gate (>= ${{ env.COVERAGE_THRESHOLD }}%)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Add helm-lint as a needs dependency so chart breakage blocks the
+    # coverage gate (and therefore the entire pipeline) just like a test
+    # failure would. Chart changes ship with the same release artefact and
+    # must hold the same quality bar.
+    needs:
+      - test
+      - helm-lint
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-cobertura
+          path: ./coverage
+
+      - name: Install ReportGenerator
+        # ReportGenerator merges Cobertura files and emits a TextSummary we can parse.
+        run: dotnet tool install --global dotnet-reportgenerator-globaltool
+
+      - name: Generate merged coverage report
+        run: |
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          reportgenerator \
+            -reports:'./coverage/**/coverage.cobertura.xml' \
+            -targetdir:./coverage-report \
+            -reporttypes:'TextSummary;Cobertura'
+
+      - name: Enforce coverage threshold
+        # Parse the "Line coverage:" entry from Summary.txt and compare to threshold.
+        # Note (CLAUDE.md §3.4): COVERAGE_THRESHOLD now sits at 85 (iter-143). The final
+        # ratchet step toward the 90% TOR target (UAT 005) lands once iter-143's 85% gate
+        # holds across at least one full release cycle without unrelated drift.
+        run: |
+          set -euo pipefail
+          SUMMARY="./coverage-report/Summary.txt"
+          if [ ! -f "$SUMMARY" ]; then
+            echo "ERROR: coverage summary not found at $SUMMARY"
+            exit 1
+          fi
+          echo "----- Coverage Summary -----"
+          cat "$SUMMARY"
+          echo "----------------------------"
+          LINE_COVERAGE=$(grep -E '^\s*Line coverage:' "$SUMMARY" | head -n 1 | sed -E 's/.*:\s*([0-9.]+)%.*/\1/')
+          if [ -z "$LINE_COVERAGE" ]; then
+            echo "ERROR: could not parse line coverage from summary"
+            exit 1
+          fi
+          echo "Parsed line coverage: $LINE_COVERAGE%"
+          echo "Required threshold:   ${{ env.COVERAGE_THRESHOLD }}%"
+          awk -v cov="$LINE_COVERAGE" -v thr="${{ env.COVERAGE_THRESHOLD }}" \
+            'BEGIN { if (cov + 0 < thr + 0) { print "FAIL: coverage below threshold"; exit 1 } else { print "PASS: coverage meets threshold"; exit 0 } }'
+
+      - name: Upload merged coverage report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: ./coverage-report
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Stage 6: SAST -- runs in parallel with test (independent of build artefacts).
+  # Uploads SARIF to GitHub Security tab so findings are visible per-commit.
+  # ---------------------------------------------------------------------------
+  sast:
+    name: SAST (Microsoft Security DevOps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        # Some analyzers (e.g. BinSkim) need the .NET runtime for scanning compiled artefacts.
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Run Microsoft Security DevOps scan
+        id: msdo
+        uses: microsoft/security-devops-action@v1
+        with:
+          categories: code,artifacts
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.msdo.outputs.sarifFile }}
+
+  # ---------------------------------------------------------------------------
+  # Stage 6b: Accessibility scan (R0223 / UI 004).
+  #
+  # Runs axe-core 4.10 against the citizen-portal static shell hosted by the
+  # Cnas.Ps.Accessibility.Tests fixture. The job is independent of the unit
+  # test lane because it needs Playwright browser dependencies; isolating
+  # them here keeps the main `test` job lean and fast.
+  #
+  # The vendored Resources/axe.min.js in the repository is a marked PLACEHOLDER
+  # so contributors who run the suite offline get a logged warning rather than
+  # a failed test. The CI job downloads the real axe-core bundle from the
+  # dequelabs GitHub release before invoking `dotnet test`, so a "bundle
+  # missing" warning in CI signals a pipeline misconfiguration.
+  #
+  # Why not extend Cnas.Ps.E2E.Tests: the E2E suite is excluded from the unit
+  # lane via --filter and would otherwise have to run every journey to also
+  # run accessibility scans; the accessibility project keeps the scan surface
+  # narrow and dedicated.
+  # ---------------------------------------------------------------------------
+  accessibility:
+    name: Accessibility scan (axe-core 4.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    permissions:
+      contents: read
+    env:
+      AXE_VERSION: "4.10.0"
+      AXE_BUNDLE_PATH: tests/Cnas.Ps.Accessibility.Tests/Resources/axe.min.js
+      ACCESSIBILITY_PROJECT: tests/Cnas.Ps.Accessibility.Tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.SOLUTION }}
+
+      # Replace the vendored placeholder with the real axe-core bundle BEFORE
+      # building, so the EmbeddedResource picked up by `dotnet build` is the
+      # production scanner rather than the placeholder. --fail flips a non-2xx
+      # HTTP status into a non-zero exit (silent CDN outages were the most
+      # common historical reason for the scan to vacuously pass).
+      - name: Fetch real axe-core bundle
+        run: |
+          curl --silent --show-error --fail --location \
+            "https://github.com/dequelabs/axe-core/releases/download/v${{ env.AXE_VERSION }}/axe.min.js" \
+            --output "${{ env.AXE_BUNDLE_PATH }}"
+          head -1 "${{ env.AXE_BUNDLE_PATH }}"
+
+      - name: Build accessibility project
+        run: dotnet build ${{ env.ACCESSIBILITY_PROJECT }} --no-restore --configuration Release
+
+      # Install the Chromium binary Playwright needs. The .NET SDK ships the
+      # `playwright.ps1` helper into the project's bin folder after build; we
+      # invoke it via pwsh which is pre-installed on ubuntu-latest runners.
+      - name: Install Playwright Chromium
+        run: |
+          pwsh ${{ env.ACCESSIBILITY_PROJECT }}/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+
+      - name: Run accessibility scan
+        run: |
+          dotnet test ${{ env.ACCESSIBILITY_PROJECT }} \
+            --no-build \
+            --configuration Release \
+            --logger trx \
+            --results-directory ./TestResults/Accessibility
+
+      - name: Upload TRX test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: accessibility-results-trx
+          path: ./TestResults/Accessibility/**/*.trx
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Stage 7: Publish artifacts -- only on push to main. Produces API and Web zips.
+  # ---------------------------------------------------------------------------
+  publish-artifact:
+    name: Publish artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - format-check
+      - build
+      - test
+      # helm-lint must succeed before we publish any artefact -- a broken
+      # chart on main would silently cascade into the release pipeline.
+      - helm-lint
+      - coverage-gate
+      - sast
+      # Accessibility blocks artefact publishing on the same footing as test
+      # and coverage: a regression in serious/critical WCAG violations must
+      # never escape into a release.
+      - accessibility
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ env.SOLUTION }}
+
+      - name: Publish API
+        run: |
+          dotnet publish src/Cnas.Ps.Api/Cnas.Ps.Api.csproj \
+            --configuration Release \
+            --no-restore \
+            --output ./publish/api
+
+      - name: Publish Web
+        run: |
+          dotnet publish src/Cnas.Ps.Web/Cnas.Ps.Web.csproj \
+            --configuration Release \
+            --no-restore \
+            --output ./publish/web
+
+      - name: Upload API artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cnas-ps-api
+          path: ./publish/api
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload Web artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cnas-ps-web
+          path: ./publish/web
+          retention-days: 30
+          if-no-files-found: error

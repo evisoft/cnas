@@ -1,0 +1,246 @@
+# =============================================================================
+# values.yaml — default (and schema-documenting) values for the cnas-ps chart.
+# =============================================================================
+# Every key is documented so operators can override safely. Sensitive values
+# (DB connection strings, MGov bearer tokens, MinIO credentials, JWT keys)
+# MUST be supplied via a Kubernetes Secret named in `api.envFromSecret`.
+# DO NOT inline secrets in this file or any environment-specific override.
+#
+# Cluster timezone is assumed to be UTC (CLAUDE.md cross-cutting principle).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global metadata propagated to all resources.
+# -----------------------------------------------------------------------------
+nameOverride: ""
+fullnameOverride: ""
+
+# Common labels appended to every resource. Useful for cost-allocation,
+# environment tagging, etc.
+commonLabels: {}
+# Common annotations appended to every resource.
+commonAnnotations: {}
+
+# Image pull secrets used by both API and Web deployments.
+# Example: [{ name: ghcr-pull-secret }]
+imagePullSecrets: []
+
+# Override the default ServiceAccount name. If empty, a dedicated SA is
+# generated for the release.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# =============================================================================
+# api — ASP.NET Core 10 service
+# =============================================================================
+api:
+  image:
+    repository: ghcr.io/evisoft/cnas-ps-api
+    # REQUIRED: caller must override with the immutable release tag.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  replicaCount: 2
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+    annotations: {}
+
+  # Container resources. `requests` reserve scheduling capacity; `limits`
+  # cap consumption. Tuned for a moderate-traffic API pod.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  # Extra non-sensitive environment variables. Keys/values land in a
+  # ConfigMap and are mounted via envFrom. Use this for things like
+  # `ASPNETCORE_ENVIRONMENT`, `Cnas__SkipMigrations`, etc.
+  # Example:
+  #   env:
+  #     ASPNETCORE_ENVIRONMENT: Production
+  #     Cnas__SkipMigrations: "false"
+  env: {}
+
+  # MUST be supplied: name of a Kubernetes Secret containing sensitive
+  # environment variables (ConnectionStrings__Postgres, JWT signing keys,
+  # MGov bearers, Minio__SecretKey, etc.).
+  # The Secret itself is created out-of-band (kubectl, sealed-secrets,
+  # external-secrets, Vault, etc.). Leave empty to deploy without secrets
+  # (e.g., dev with in-cluster Postgres only).
+  envFromSecret: ""
+
+  # Optional: name of an additional ConfigMap whose keys become env vars.
+  envFromConfigMap: ""
+
+  # Topology spread — schedule across zones for HA.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: api
+
+  # Pod-level affinity / anti-affinity. Override for stricter HA.
+  affinity: {}
+  nodeSelector: {}
+  tolerations: []
+
+  # Probes hit endpoints registered by the API
+  # (see src/Cnas.Ps.Api/Composition/ApiCompositionRoot.cs).
+  probes:
+    liveness:
+      path: /health/live
+      port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      path: /health/ready
+      port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+# =============================================================================
+# web — Blazor WebAssembly SPA served by nginx
+# =============================================================================
+web:
+  image:
+    repository: ghcr.io/evisoft/cnas-ps-web
+    # REQUIRED: caller must override with the immutable release tag.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  replicaCount: 2
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+    annotations: {}
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: web
+
+  affinity: {}
+  nodeSelector: {}
+  tolerations: []
+
+  probes:
+    liveness:
+      path: /
+      port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      path: /
+      port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+# =============================================================================
+# ingress — optional HTTP(S) gateway
+# =============================================================================
+# When enabled, a single Ingress fronts both Web (root) and API (/api).
+# Configure the class (e.g. "nginx", "traefik") and TLS as appropriate.
+# Example hosts entry:
+#   hosts:
+#     - host: cnas.gov.md
+#       paths:
+#         - { path: /,    pathType: Prefix, service: web }
+#         - { path: /api, pathType: Prefix, service: api }
+#   tls:
+#     - secretName: cnas-tls
+#       hosts: [cnas.gov.md]
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+# =============================================================================
+# autoscaling — HorizontalPodAutoscaler for the API
+# =============================================================================
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  # Optional memory target (omit to disable memory-based scaling).
+  targetMemoryUtilizationPercentage: 0
+
+# =============================================================================
+# monitoring — Prometheus ServiceMonitor (requires the operator)
+# =============================================================================
+monitoring:
+  enabled: false
+  serviceMonitor:
+    # Namespace into which the ServiceMonitor is created. Empty = release ns.
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+    # Label selector the Prometheus instance uses to pick up ServiceMonitors.
+    labels: {}
+    # Metrics endpoint exposed by the API.
+    path: /metrics
+
+# =============================================================================
+# networkPolicy — default-deny + selective allow
+# =============================================================================
+# When enabled, a default-deny policy plus targeted allow rules are rendered
+# so only Ingress traffic and intra-namespace API<->Web flows are permitted.
+networkPolicy:
+  enabled: false
+  # Extra namespaces allowed to call the API (besides the release ns).
+  allowFromNamespaces: []
+
+# =============================================================================
+# secrets — bring-your-own vs. ExternalSecret operator
+# =============================================================================
+# If `externalOperator` is true, an ExternalSecret resource (CRD from
+# external-secrets.io) is rendered. The actual SecretStore must already be
+# configured in the cluster.
+# If false, you must create the Secret named in `api.envFromSecret` yourself
+# (kubectl, sealed-secrets, Vault Agent Injector, etc.).
+secrets:
+  externalOperator: false
+  externalSecretName: ""
+  # SecretStore (or ClusterSecretStore) reference used by the ExternalSecret.
+  secretStoreRef:
+    name: ""
+    kind: ClusterSecretStore
+  refreshInterval: 1h
+  # Map of target K8s secret key -> remote key in the SecretStore.
+  # Example:
+  #   data:
+  #     ConnectionStrings__Postgres: { remoteRef: { key: cnas/db/conn } }
+  data: {}

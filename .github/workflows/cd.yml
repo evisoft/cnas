@@ -1,0 +1,330 @@
+# Purpose:
+#   Continuous-deployment pipeline for the CNAS Social Protection Information
+#   System. Closes the gap in CLAUDE.md Phase 4 stages 8-11 (deploy-to-staging,
+#   post-deploy E2E gate, deploy-to-production with manual approval,
+#   post-deploy health check + automatic rollback). Complements:
+#     - `ci.yml`        : stages 1-7 (build/test/coverage/SAST/publish).
+#     - `release.yml`   : tag-driven multi-arch image + Helm chart publishing.
+#
+# When:
+#   - Auto: every successful push to `main` triggers `deploy-staging`.
+#   - Manual: `workflow_dispatch` with a `version` input triggers
+#             `deploy-production` (manual approval gate via the `production`
+#             environment).
+#
+# Cardinal rules applied (CLAUDE.md):
+#   - Every action is pinned to a major version (no @main / @master / @latest).
+#   - Each job declares its own least-privilege permissions block.
+#   - No secrets are committed; deployment uses the registry credentials +
+#     KUBECONFIG-style secret resolved by GitHub Environments. Placeholder env
+#     vars (`REGISTRY_URL`, `STAGING_BASE_URL`, `PRODUCTION_BASE_URL`) are
+#     resolved per-environment so the same workflow ships to dev/test/training/
+#     production without code changes.
+#   - On health-check failure we run `helm rollback`; Helm's `--atomic` flag
+#     additionally guarantees the upgrade itself rolls back automatically when
+#     the release fails to converge inside the timeout window.
+#
+# Rollback semantics:
+#   - `helm upgrade --install --atomic --timeout 5m` — Helm itself rolls back
+#     on convergence failure (e.g. ImagePullBackOff, readiness-probe failure).
+#   - Post-deploy `curl /health` retry loop — explicit rollback when the
+#     ingress is up but the application reports unhealthy.
+#
+# Operator notes:
+#   - `helm-lint` runs early in the job; the chart is the same one packaged
+#     by `release.yml` so values overlays stay in sync.
+#   - `deploy-production` is environment-gated to `production`, which CNAS ops
+#     configures with the required-reviewers protection rule. The workflow
+#     blocks until the approval is granted.
+
+name: CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to deploy (e.g. v1.2.3). Required for production."
+        required: true
+        type: string
+      target:
+        description: "Deployment target (defaults to production for manual dispatch)."
+        required: true
+        default: production
+        type: choice
+        options:
+          - staging
+          - production
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Prevent two racing CD runs against the same target.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CHART_DIR: ops/k8s/cnas-ps
+  HELM_VERSION: v3.14.4
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 8 (CLAUDE.md Phase 4) — deploy to staging on every successful merge
+  # to `main`. Renders the Helm chart with `values.staging.yaml` and waits for
+  # Helm convergence. Stage 9 (E2E) follows immediately in the next job.
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to staging
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_BASE_URL }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        # Pinned helm CLI version so a Helm-4 GA cannot silently change behaviour.
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Resolve image tag
+        # Tag the rolled-out image with the git SHA so each staging deploy is
+        # uniquely identified. Replaces the chart-default `appVersion`.
+        id: tag
+        run: |
+          echo "value=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Helm lint (strict)
+        # Matches the warnings-as-errors posture from `release.yml`.
+        run: |
+          helm lint "$CHART_DIR" --strict -f "$CHART_DIR/values.staging.yaml"
+
+      - name: Write kubeconfig
+        # Materialise the kubeconfig once so subsequent steps (context guard +
+        # helm deploy + post-deploy rollback) all share the same credential
+        # state. Splitting this from the deploy step lets the context-name
+        # guard refuse to proceed BEFORE we mutate the cluster.
+        env:
+          KUBECONFIG_DATA: ${{ secrets.STAGING_KUBECONFIG }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.kube"
+          printf "%s" "$KUBECONFIG_DATA" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Verify kubectl context
+        # Defence-in-depth — refuse to proceed when the kubeconfig material the
+        # job decoded resolves to a context other than the staging cluster. The
+        # rollback step below also runs against the current context, so a
+        # mis-pointed kubeconfig could otherwise mutate the wrong release.
+        run: |
+          set -euo pipefail
+          EXPECTED_CTX="cnas-ps-staging"
+          ACTUAL_CTX=$(kubectl config current-context)
+          if [[ "$ACTUAL_CTX" != "$EXPECTED_CTX" ]]; then
+            echo "::error::Refusing to deploy to '$ACTUAL_CTX'; expected '$EXPECTED_CTX'."
+            exit 1
+          fi
+
+      - name: Deploy with helm upgrade --install --atomic
+        # `--atomic` rolls the release back automatically when the upgrade
+        # fails to converge (ImagePullBackOff, readiness probe failure, etc.).
+        # `--timeout 5m` caps the wait; the post-deploy curl loop below
+        # provides defence-in-depth against an application that boots but
+        # returns unhealthy.
+        env:
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
+        run: |
+          set -euo pipefail
+          helm upgrade --install cnas-ps "$CHART_DIR" \
+            --namespace cnas-ps \
+            --create-namespace \
+            --atomic \
+            --timeout 5m \
+            -f "$CHART_DIR/values.staging.yaml" \
+            --set image.registry="$REGISTRY_URL" \
+            --set image.tag="${{ steps.tag.outputs.value }}"
+
+      - name: Post-deploy health check
+        # Stage 11 (health check). 30 retries × 5s = 2.5 minutes — long enough
+        # to absorb Helm rollout finalisation but short enough to fail fast
+        # when /health stays red. On failure we roll the release back manually
+        # so the cluster never sits on an unhealthy revision.
+        env:
+          STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -sf --max-time 10 "${STAGING_BASE_URL}/health" >/dev/null; then
+              echo "Staging /health returned 200 on attempt $i."
+              exit 0
+            fi
+            echo "Attempt $i: /health not yet ready — retrying."
+            sleep 5
+          done
+          echo "::error::Staging /health never returned 200 — rolling back."
+          helm rollback cnas-ps --namespace cnas-ps --wait
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # Stage 9 (CLAUDE.md Phase 4) — E2E smoke against staging immediately after
+  # deploy. We re-use the existing E2E project; the `Category=SmokeStaging`
+  # filter is the convention applied to the small fast subset that exercises
+  # the bare minimum (boot, health, MPass redirect). Stage 10 (production)
+  # only runs after a human approves the `production` environment promotion,
+  # so failing E2E here will simply block the manual promotion.
+  # ---------------------------------------------------------------------------
+  e2e-staging-gate:
+    name: E2E smoke gate (staging)
+    if: ${{ github.event_name == 'push' }}
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Run staging E2E smoke tests
+        # The category filter restricts the run to the fast smoke subset; the
+        # full E2E suite stays gated behind the supplier-led UAT plan and runs
+        # in `release.yml` on tag push, not on every merge to main.
+        env:
+          E2E_BASE_URL: ${{ vars.STAGING_BASE_URL }}
+        run: |
+          dotnet test tests/Cnas.Ps.E2E.Tests/Cnas.Ps.E2E.Tests.csproj \
+            --configuration Release \
+            --filter "Category=SmokeStaging" \
+            --logger "trx;LogFileName=staging-smoke.trx"
+
+      - name: Upload smoke-test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-staging-smoke
+          path: tests/Cnas.Ps.E2E.Tests/TestResults/staging-smoke.trx
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Stage 10 (CLAUDE.md Phase 4) — manual promotion to production. The
+  # `production` environment is configured with a required-reviewers
+  # protection rule in CNAS ops; the workflow blocks until a human approves
+  # the deployment. The same `--atomic` + curl /health loop runs here so the
+  # cluster never lands on an unhealthy production revision.
+  # ---------------------------------------------------------------------------
+  deploy-production:
+    name: Deploy to production (manual approval)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'production' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_BASE_URL }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Resolve image tag
+        # The workflow_dispatch `version` input is the source of truth for the
+        # production deploy. We accept either `vX.Y.Z` or `X.Y.Z` and normalise.
+        id: tag
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::Invalid version '${{ inputs.version }}' — expected v1.2.3 or 1.2.3-rc1."
+            exit 1
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved image tag: $VERSION"
+
+      - name: Helm lint (strict)
+        run: |
+          helm lint "$CHART_DIR" --strict -f "$CHART_DIR/values.production.yaml"
+
+      - name: Write kubeconfig
+        # Materialise the kubeconfig once so subsequent steps (context guard +
+        # helm deploy + post-deploy rollback) all share the same credential
+        # state. Splitting this from the deploy step lets the context-name
+        # guard refuse to proceed BEFORE we mutate the cluster.
+        env:
+          KUBECONFIG_DATA: ${{ secrets.PRODUCTION_KUBECONFIG }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.kube"
+          printf "%s" "$KUBECONFIG_DATA" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Verify kubectl context
+        # Defence-in-depth — refuse to proceed when the kubeconfig material the
+        # job decoded resolves to a context other than the production cluster.
+        # The rollback step below also runs against the current context, so a
+        # mis-pointed kubeconfig could otherwise mutate the wrong release. This
+        # is especially critical for production.
+        run: |
+          set -euo pipefail
+          EXPECTED_CTX="cnas-ps-production"
+          ACTUAL_CTX=$(kubectl config current-context)
+          if [[ "$ACTUAL_CTX" != "$EXPECTED_CTX" ]]; then
+            echo "::error::Refusing to deploy to '$ACTUAL_CTX'; expected '$EXPECTED_CTX'."
+            exit 1
+          fi
+
+      - name: Deploy with helm upgrade --install --atomic
+        env:
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
+        run: |
+          set -euo pipefail
+          helm upgrade --install cnas-ps "$CHART_DIR" \
+            --namespace cnas-ps \
+            --create-namespace \
+            --atomic \
+            --timeout 10m \
+            -f "$CHART_DIR/values.production.yaml" \
+            --set image.registry="$REGISTRY_URL" \
+            --set image.tag="${{ steps.tag.outputs.value }}"
+
+      - name: Post-deploy health check
+        # Stage 11 (health check). Same retry loop as staging; on failure we
+        # roll back so production never sits on an unhealthy revision.
+        env:
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -sf --max-time 10 "${PRODUCTION_BASE_URL}/health" >/dev/null; then
+              echo "Production /health returned 200 on attempt $i."
+              exit 0
+            fi
+            echo "Attempt $i: /health not yet ready — retrying."
+            sleep 5
+          done
+          echo "::error::Production /health never returned 200 — rolling back."
+          helm rollback cnas-ps --namespace cnas-ps --wait
+          exit 1

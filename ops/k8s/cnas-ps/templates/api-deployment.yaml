@@ -1,0 +1,182 @@
+{{/*
+=============================================================================
+Deployment — Cnas.Ps.Api
+=============================================================================
+TOR R0038 requires an explicit API Deployment with HPA. This template renders
+that Deployment with the full security hardening mandated by CLAUDE.md §5:
+
+  * Runs as UID 10001 (matches the Dockerfile.api USER directive).
+  * readOnlyRootFilesystem — every writable path is an explicit emptyDir.
+  * All capabilities dropped — Kestrel listens on 8080 so NET_BIND is unused.
+  * seccompProfile: RuntimeDefault — kernel surface attack reduction.
+  * Resources requested + limited — protects siblings from runaway pods.
+  * Probes:
+      - livenessProbe   → /health/live   (excludes deps; restart on hang).
+      - readinessProbe  → /health/ready  (deps must be up; drop from LB on flap).
+      - startupProbe    → /health/live   (generous failureThreshold so a
+                          cold start with EF migrations does not kill the pod).
+  * Env vars come from a ConfigMap + Secret, layered via envFrom. The
+    ConfigMap holds non-secret config (Cnas:Observability:* etc.); the
+    Secret holds the connection string + keys. Layering preserves the
+    "secrets never touch source control" invariant from CLAUDE.md §1.8 —
+    operators can swap the Secret backing store (inline → ExternalSecret →
+    Vault Agent) without touching the ConfigMap or the Deployment spec.
+
+The pod template carries a checksum/config annotation so a ConfigMap edit
+triggers a rolling update (otherwise envFrom changes are invisible to the
+existing pods until the next image bump).
+=============================================================================
+*/}}
+{{- include "cnas-ps.validateRequired" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cnas-ps.apiName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cnas-ps.componentLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxSurge 25% / maxUnavailable 0 — never drop below the current
+      # replica count during a rollout. With replicaCount: 3 this means
+      # at most 1 extra pod scheduled at a time.
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cnas-ps.componentSelectorLabels" (dict "ctx" . "component" "api") | nindent 8 }}
+      annotations:
+        # Roll the pods whenever the ConfigMap content changes.
+        checksum/config: {{ include (print $.Template.BasePath "/api-configmap.yaml") . | sha256sum }}
+        # Same for the Secret — but only when we are rendering an inline
+        # Secret (vault.enabled=false). With ExternalSecret the actual
+        # Secret resource is reconciled by the operator and lives outside
+        # the chart's rendered output, so its checksum is not stable.
+        {{- if not .Values.vault.enabled }}
+        checksum/secret: {{ include (print $.Template.BasePath "/api-secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.commonAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "cnas-ps.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            # Layer order is significant: later sources overwrite earlier
+            # ones if the same key appears twice. We deliberately put the
+            # Secret LAST so a typo in the ConfigMap can never shadow a
+            # secret value at runtime.
+            - configMapRef:
+                name: {{ include "cnas-ps.apiConfigName" . }}
+            - secretRef:
+                name: {{ include "cnas-ps.apiSecretName" . }}
+          env:
+            # ASP.NET Core honours both `ASPNETCORE_ENVIRONMENT` and the
+            # standard .NET env-var naming, but the host (kubelet) cannot
+            # interpolate ${POD_NAME} — that is exposed via downward API.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          livenessProbe:
+            httpGet:
+              # /health/live excludes dependencies (Predicate = false in
+              # ApiCompositionRoot). A failing dep must NOT restart the pod —
+              # that would amplify a partial outage into a full one.
+              path: /health/live
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              # /health/ready runs every dependency probe (db.postgres,
+              # storage.minio, mgov.*, workflow.operaton). The pod is
+              # removed from the Service rotation while any dep is down,
+              # which gives the load balancer a chance to fail over.
+              path: /health/ready
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            # 60 × 5s = 5 minutes — accommodates EF Core migration runs
+            # on first boot without giving up.
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # /tmp must be writable for ASP.NET DataProtection key files,
+            # OTel temp buffers, and Npgsql certificate caches — none of
+            # these need to survive a restart, so emptyDir is sufficient.
+            - name: tmp
+              mountPath: /tmp
+            # ASP.NET writes DataProtection keys to ~/.aspnet/DataProtection-Keys
+            # by default. With readOnlyRootFilesystem on, give it a writable
+            # mount so the encryption ring can be persisted within the pod
+            # lifetime (intentional — short-lived; rotated on restart).
+            - name: aspnet-data
+              mountPath: /home/app/.aspnet
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: aspnet-data
+          emptyDir:
+            sizeLimit: 16Mi

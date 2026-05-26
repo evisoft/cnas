@@ -1,0 +1,103 @@
+@page "/applications/{id}"
+@inject CnasApiClient Api
+@inject NavigationManager Navigation
+@inject IStringLocalizer<PagesResource> L
+
+@*
+    Application detail view. Displays the reference number, status badge, submitted-at,
+    and the form payload as pretty-printed JSON. Offers a Withdraw button when the
+    application is still mutable (Draft / Submitted / UnderExamination).
+*@
+
+<PageTitle>@(_app?.ReferenceNumber ?? Id) · @L["App.Title"]</PageTitle>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert" data-testid="error-alert">
+        <strong>@L["Common.Error"]</strong> <code>@_error</code>
+    </div>
+}
+else if (_app is null)
+{
+    <p>@L["Common.Loading"]</p>
+}
+else
+{
+    <h1>@(_app.ReferenceNumber ?? _app.Id)</h1>
+
+    <dl class="meta">
+        <dt>@L["Applications.Status"]</dt>
+        <dd>
+            <span class="status-badge @StatusCssClass(_app.Status)" data-testid="status-badge">@_app.Status</span>
+        </dd>
+        <dt>@L["Applications.SubmittedAt"]</dt>
+        <dd>@(_app.SubmittedAtUtc?.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "-")</dd>
+    </dl>
+
+    @if (!string.IsNullOrWhiteSpace(_payloadPretty))
+    {
+        <h2>@L["Applications.PayloadHeading"]</h2>
+        <pre class="payload" data-testid="payload"><code>@_payloadPretty</code></pre>
+    }
+
+    @if (CanWithdraw(_app.Status))
+    {
+        <button type="button" class="danger" data-testid="withdraw-btn" @onclick="OnWithdrawAsync">
+            @L["Applications.WithdrawButton"]
+        </button>
+    }
+}
+
+@code {
+    /// <summary>Sqid id provided via the route parameter.</summary>
+    [Parameter] public string Id { get; set; } = string.Empty;
+
+    private ApplicationOutput? _app;
+    private string? _payloadPretty;
+    private string? _error;
+
+    /// <inheritdoc />
+    protected override async Task OnParametersSetAsync()
+    {
+        _error = null;
+        _app = null;
+        _payloadPretty = null;
+
+        var r = await Api.GetApplicationAsync(Id).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _error = r.ErrorCode;
+            return;
+        }
+        _app = r.Value;
+    }
+
+    /// <summary>POSTs withdraw, then navigates back to the list. Errors surface as the page-level alert.</summary>
+    private async Task OnWithdrawAsync()
+    {
+        var r = await Api.WithdrawApplicationAsync(Id).ConfigureAwait(false);
+        if (r.IsFailure)
+        {
+            _error = r.ErrorCode;
+            return;
+        }
+        Navigation.NavigateTo("/applications");
+    }
+
+    /// <summary>True when the application status is in a mutable state.</summary>
+    /// <param name="status">Status string from the API.</param>
+    /// <returns>True if Withdraw is a legal action.</returns>
+    private static bool CanWithdraw(string status) =>
+        string.Equals(status, "Draft", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(status, "Submitted", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(status, "UnderExamination", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Maps a status string to a CSS class for the badge colour.</summary>
+    private static string StatusCssClass(string status) => status?.ToLowerInvariant() switch
+    {
+        "approved" => "ok",
+        "rejected" => "ko",
+        "withdrawn" => "muted",
+        _ => "info",
+    };
+}
