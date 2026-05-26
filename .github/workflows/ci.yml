@@ -227,7 +227,7 @@ jobs:
         # Pinned to the action's v4 major. The `version` input controls the
         # Helm CLI binary; we pin it to a known-good 3.x line rather than
         # `latest` so a future Helm-4 GA cannot silently upgrade the CI lane.
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         with:
           version: v3.14.4
 
